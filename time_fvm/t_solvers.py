@@ -52,25 +52,32 @@ class TSolver(ABC):
     cells: FVMCells
     eq: FVMEquation
 
-    def __init__(self, cells: FVMCells, dt: float, n_steps: int, eq, cfg: ConfigFVM):
+    def __init__(self, cells: FVMCells, eq: FVMEquation, cfg: ConfigFVM):
         """
         Initialize the time-stepping solver.
-
-        Args:
-            dt: The time step size.
         """
-        # from time_fvm import FVMEquation
-        self.dt = dt
-        self.n_steps = n_steps
+        self.device = cfg.device
+        self.dt = cfg.dt
+        self.n_steps = cfg.n_iter
         self.cells = cells
-        self.eq: FVMEquation = eq
+        self.eq = eq
         self.print_i = cfg.print_i
         self.plot_t = cfg.plot_t
         self.save_t = cfg.save_t
         self.saver = Saver(self.eq.E_props)
 
+        # replace self._solve_step with compiled version if needed
+        if cfg.compile:
+            self._solve_step = torch.compile(self._solve_step)
+
     def _solve(self):
-        self.dt = torch.tensor(self.dt, device=self.cells.state.device)
+        """ Main loop for the program.
+                - Loops through time steps, calling the step function to update the solution.
+                - Prints out progress every print_i iterations.
+                - Plots the solution every plot_t seconds.
+                - Saves the solution every save_t seconds.
+        """
+        self.dt = torch.tensor(self.dt, device=self.device)
         next_plot_t = 0 # self.plot_t
         next_save_t = self.save_t
 
@@ -98,20 +105,6 @@ class TSolver(ABC):
                 titles = ["Vx", "Vy", "rho", "T"]
                 titles = [f'{title} at {t=:4g}' for title in titles]
                 self.eq.plot_interp(primatives[:, :], title=titles, Xlims=Xlims)
-
-
-                # if i > 0:
-                #     cell_grads = E_props.cell_grads
-                #     self.eq.plot_interp(cell_grads[:, 1, 0])
-                #     exit(9)
-                # self.eq.pretty_plot(primatives, [(0.75, 10), (-2.25, 1.5)] , title=f"t={t:.4g}")
-                # self.eq.plot_interp(self.eq.pressure_div[:, :2], Xlims=Xlims, title=f"Pressure div at t={t:.4g}")
-                # self.eq.plot_interp(self.eq.advect_div[:, :2], Xlims=Xlims, title=f"advect div at t={t:.4g}")
-                # self.eq.plot_interp(self.eq.kt_div[:, 0], Xlims=Xlims, title=f"KT div  at t={t:.4g}")
-                # self.eq.plot_interp(self.eq.divergence[:, 0], Xlims=Xlims, title=f"div at t={t:.4g}")
-                # self.eq.plot_cells(primatives[:, 0], title=f'Vx at t={t:.4g}', Xlims=Xlims, show_index=True)
-                # self.eq.plot_flux(torch.ones_like(E_props.rho_faces[:, 0, 0]), title=f"P t={t:.4g}", Xlims=Xlims, show_index=True)
-
 
                 if torch.any(torch.isnan(primatives)):
                     print("Nan in primatives")
@@ -179,11 +172,9 @@ class TSolver(ABC):
         else:
             self._solve_profile()
 
-    # @torch.compile()
     def _solve_step(self, t):
         new_Us = self._step(t)
         self.cells.update_cells(new_Us)
-
 
     def _solve_profile(self):
         import torch.profiler
@@ -230,7 +221,6 @@ class TSolver(ABC):
 
         print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10))
         prof.export_chrome_trace("trace.json")
-
 
     @abstractmethod
     def _step(self, t):

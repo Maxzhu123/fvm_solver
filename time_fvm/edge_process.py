@@ -3,7 +3,7 @@ from cprint import c_print
 import torch
 
 from time_fvm.fvm_mesh import FVMMesh
-from time_fvm.fvm_store import Edge, EdgeBCTypes
+from time_fvm.fvm_store import Edge
 from time_fvm.config_fvm import ConfigFVM
 from time_fvm.sparse_utils import lift_sparse_matrix, combine_edge_operators, to_csr
 from time_fvm.edge_boundary import BoundarySetter
@@ -147,7 +147,6 @@ class FVMEdgeInfo:
         self.n_comp = n_comp
         self.slope_limiter = SlopeLimiter(mesh.areas.to(device), cfg)
 
-
         self.C_v = cfg.C_v
 
         self.edge_to_tri_main = mesh.edge_to_tri_main.to(device)
@@ -190,7 +189,6 @@ class FVMEdgeInfo:
         c_print(f'_init_bc done', color="magenta")
 
         self._build_spm_face_grads()
-        c_print(f'_build_spm_face_grads done', color="magenta")
         c_print(f'Complete init FVMEdgeInfo', color="magenta")
 
     def clear_temp(self):
@@ -292,7 +290,6 @@ class FVMEdgeInfo:
         self.div_V_faces = U_face_all[:, :, 4]  # shape = [n_edges, edges=2]
 
         # Conserved quantities
-        # TODO: Move to physical properties
         self.mom_faces = self.Vs_faces * self.rho_faces  # shape = [n_edges, edges=2, dims=2]
         self.Q_faces = self.rho_faces * (1/2  * self.Vs_faces.norm(dim=-1, keepdim=True) ** 2 + self.C_v * self.T_faces)
         self.phi = (self.Vs_faces * self.normals.unsqueeze(1)).sum(dim=-1) # shape = [n_edges, edges=2, ]

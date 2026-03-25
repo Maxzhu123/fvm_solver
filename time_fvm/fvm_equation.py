@@ -17,7 +17,7 @@ class PhysicalSetup:
     c: torch.Tensor         # shape = [n_edges, 2, 1]
 
     def __init__(self, cfg: ConfigFVM, device="cpu"):
-        self.device = device
+        self.device = cfg.device
 
         self.T_0 = cfg.T_0
         self.gamma = cfg.gamma
@@ -26,7 +26,6 @@ class PhysicalSetup:
         self.S_const = cfg.S_const
         self.R = cfg.C_v * (cfg.gamma - 1)
         self.C_v_inv = 1 / cfg.C_v
-
 
     def state_to_primative(self, state):
         """ Convert """
@@ -59,14 +58,20 @@ class PhysicalSetup:
         """ Pressure force:
                 P = rho * C_v * (gamma - 1) * T = R * rho * T
         """
-        rho_faces = E_props.rho_faces  # shape = [n_edges, edges=2, n_comp=1]
-        T_faces = E_props.T_faces       # shape = [n_edges, edges=2, n_comp=1]
+        rho_faces = E_props.rho_faces               # shape = [n_edges, edges=2, n_comp=1]
+        T_faces = E_props.T_faces                   # shape = [n_edges, edges=2, n_comp=1]
 
-        self.P_face = self.R * rho_faces * T_faces
-        self.c = torch.sqrt(self.gamma * self.P_face / rho_faces)  # shape = [n_edges, edges=2, n_comp=1]
+        self.P_face = self.eos_P(rho_faces, T_faces)
+        self.c = self.eos_c(rho_faces, T_faces)     # shape = [n_edges, edges=2, n_comp=1]
 
-        # print(f'{self.c.mean() = }')
-        # assert not torch.any(torch.isnan(self.c))
+    # General gas parameters.
+    def eos_c(self, rho, T):
+        """ Speed of sound, c^2 = dp/drho | s"""
+        return torch.sqrt(self.gamma * self.R * T)
+
+    def eos_P(self, rho, T):
+        """ Pressure EOS """
+        return self.R * rho * T
 
     def update(self, E_props: FVMEdgeInfo):
         # E_props = self.E_props
@@ -104,9 +109,7 @@ class Adevction(FVMEdgeFunc):
             f_E = (Q+p) * phi
         """
         E_props = self.E_props
-        #V_faces = E_props.Vs_faces      # shape = [n_edges, edges=2, n_comp=2]
         rho_faces = E_props.rho_faces # shape = [n_edges, edges=2, n_comp=1]
-        #T_faces = E_props.T_faces       # shape = [n_edges, edges=2, n_comp=1]
         phi = E_props.phi           # Linear interpolation of convection vector = (v_faces dot normal). shape = [n_edges, edges=2]
         mom_f = E_props.mom_faces
         Q_faces = E_props.Q_faces # = rho_faces * (1/2  * V_faces.norm(dim=-1, keepdim=True) ** 2 + self.C_v * T_faces)
@@ -273,11 +276,13 @@ class FVMEquation:
     cells: FVMCells
     n_comp: int
 
-    def __init__(self, cfg: ConfigFVM, mesh: FVMMesh, n_comp, bc_tag, us_init=None, device="cuda"):
+    def __init__(self, cfg: ConfigFVM, mesh: FVMMesh, n_comp, bc_tag, us_init=None):
         self.cfg = cfg
-        self.device = device
+        self.device = cfg.device
         self.mesh = mesh
         self.n_comp = n_comp
+
+        device = self.device
 
         # Physical parameters
         self.phy_setup = PhysicalSetup(cfg=cfg, device=device)
@@ -289,15 +294,14 @@ class FVMEquation:
         # Matrix for converting edge fluxes to cell divergence
         self.flux_mat = self.build_flux_mat(mesh.tri_to_edge, -mesh.tri_edge_signs, mesh.n_edges, mesh.areas)  # shape = [n_cells, n_edge]
 
-
         self.P_force = PressureForce(E_props, self.phy_setup, device=device)
         self.U_advect = Adevction(E_props, self.phy_setup, cfg=cfg, device=device)
         self.U_visc = Viscosity(E_props, self.phy_setup, flux_mat=self.flux_mat, device=device)
         self.Heat = Heating(E_props, self.phy_setup, cfg=cfg, device=device)
         self.KT_diff = KTDiffusion(cfg.v_factor, self.phy_setup, E_props, device=device)
 
-        # self.t_solver = Adams4PC(self.cells, cfg.dt, cfg.n_iter, self)
-        self.t_solver = Butcher_adapt(self.cells, cfg.dt, cfg.n_iter, self, name="RK3_SSP4", cfg=cfg)
+        self.t_solver = Adams4PC(self.cells, self, cfg=cfg)
+        # self.t_solver = Butcher_adapt(self.cells, self, name="RK3_SSP4", cfg=cfg)
 
         E_props.clear_temp()
         c_print("Done FVMEquation", color="bright_magenta")
@@ -326,7 +330,6 @@ class FVMEquation:
         fluxes += self.KT_diff.edge_fluxes(dt)
         # Compute divergence
         divergence = self._flux_to_div(fluxes)
-
 
         return divergence
 
@@ -358,7 +361,6 @@ class FVMEquation:
         flux_mat = to_csr(flux_mat, self.device)
         return flux_mat
 
-
     def _flux_to_div(self, fluxes):
         """ Compute cell divergence using fluxes.
             fluxes.shape = (n_edges * N_component)
@@ -368,7 +370,6 @@ class FVMEquation:
         # Matrix version
         divergence = torch.mm(self.flux_mat, fluxes)  # shape: (n_cells * n_component,)
         return divergence
-
 
     def plot_flux(self, fluxes, title="Fluxes", show_index=False, lims=None, Xlims=None):
         plot_edges(self.mesh.vertices.cpu(), self.mesh.edges.cpu(), title=title, colors=fluxes, show_index=show_index, lims=lims, Xlims=Xlims)
@@ -392,5 +393,3 @@ class FVMEquation:
 
         title = [f"Pressure: {title}", f"Mach number: {title}", f'Heating: {title}']
         plot_interp_cell(self.mesh.vertices, plot_vals, self.mesh.triangles, title=title, Xlims=Xlims)
-
-

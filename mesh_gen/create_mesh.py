@@ -3,6 +3,8 @@ import multiprocessing as mp
 import queue
 from cprint import c_print
 import logging
+from meshpy import triangle as tri
+
 
 def min_dist_to_boundary(point, seg_points, segment_indices):
     """
@@ -34,6 +36,7 @@ def min_dist_to_boundary(point, seg_points, segment_indices):
 
     return np.min(distances)
 
+
 def extract_interor_edges(triangles):
     """
     Extract all edges from the elements of the mesh.
@@ -51,6 +54,7 @@ def extract_interor_edges(triangles):
     interior_edges = unique_all_edges[all_counts == 2]
     return interior_edges
 
+
 def extract_mesh_data(mesh):
     """ Extract the mesh data from the mesh object. """
     points, triangles, bound_edges = mesh.points, mesh.elements, mesh.facets
@@ -64,8 +68,8 @@ def extract_mesh_data(mesh):
     int_edges = extract_interor_edges(triangles)
     return (points, triangles), (p_markers, f_markers), (int_edges, bound_edges)
 
+
 def _create_mesh_thread(holes, points, p_marks, segments, seg_marks, mesh_props, dist_p, dist_seg, min_angle, out_queue):
-    from meshpy import triangle as tri
 
     # Custom function to control mesh refinement
     def refine_fn(vertices, area, props, points, segments):
@@ -107,7 +111,7 @@ def safe_run(args):
         p = ctx.Process(target=_create_mesh_thread, args=tuple(args + [out_queue]))
         p.start()
         try:
-            # Wait up to 20 seconds for a message from the child
+            # Wait up to 10 seconds for a message from the child
             status, payload = out_queue.get(timeout=10)
         except queue.Empty:
             # Child didn't send anything in time (hung or crashed)

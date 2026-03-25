@@ -141,7 +141,7 @@ def main():
         c_print(f'Generating new mesh...', "green")
         prob_definition = generate_mesh(cfg)
         Xs, tri_idx, all_edgs, bc_edge_mask, edge_tag, bound_edgs = prob_definition
-        mesh = FVMMesh(Xs, tri_idx, all_edgs, bc_edge_mask, device="cuda")
+        mesh = FVMMesh(Xs, tri_idx, all_edgs, bc_edge_mask, device=cfg.device)
         pickle.dump({'mesh': mesh, "edge_tag": edge_tag, "bound_edgs": bound_edgs}, open(f"{ARTEFACT_DIR}/fvm_mesh.pkl", "wb"))
     else:
         c_print(f'Loading mesh', "green")
@@ -158,7 +158,7 @@ def main():
         bc_tags, us_init = init_conds_nozzle(mesh, edge_tag, bound_edgs, cfg, vx=V_x_nat, rho=rho_nat, T=T_nat)
     else:
         raise ValueError(f'Unknown mode {cfg.problem_setup}')
-    solver = FVMEquation(cfg, mesh, cfg.N_comp, bc_tags, us_init=us_init, device="cuda")
+    solver = FVMEquation(cfg, mesh, cfg.N_comp, bc_tags, us_init=us_init)
     solver.solve()
 
 

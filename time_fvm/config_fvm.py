@@ -4,20 +4,26 @@ from abc import ABC
 
 @dataclass
 class ConfigFVM(ABC):
+    device: str = "cuda"
+    compile: bool = True
+
     problem_setup: str = None    # {ellipse, nozzle}
     N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
 
+    # Temporal solver parameters
+    dt: float = None
+    n_iter: int = None     # Max number of iterations
+
     # mesh parameters
-    min_A: float = float("nan")
-    max_A: float = float("nan")
-    lnscale: float = float("nan")
+    min_A: float = None
+    max_A: float = None
+    lnscale: float = None
 
     # Save configuration
-    plot_t: float = 0.05   # Time interval between plots
-    save_t: float = 0.5    # Time interval between saves
-    print_i: int = 500   # Iterations between print statements
-    n_iter: int = 50000     # Max number of iterations
-    end_t: float = 20       # Max simulation time.
+    plot_t: float = None   # Time interval between plots
+    save_t: float = None    # Time interval between saves
+    print_i: int = None   # Iterations between print statements
+    end_t: float = None       # Max simulation time.
 
     # To be overwritten
     T_0: float = None        # Reference temperature
@@ -28,6 +34,11 @@ class ConfigFVM(ABC):
     gamma: float = None  # Ratio of specific heats
     C_v: float = None     # Specific heat at constant volume
 
+    # Stability parameters
+    v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
+    lim_p: int = 4          # Order of limiter (1 for BJ)
+    lim_K: int = 0.1
+
     def __post_init__(self):
         self.exit_cfg = ConfigFarfield()
         self.inlet_cfg = ConfigInlet()
@@ -37,18 +48,18 @@ class ConfigFVM(ABC):
 
 @dataclass
 class ConfigFarfield:
-    mode: str = "farfield_blended"    # {decay, farfield, farfield_blended, adaptive, interior} BC
+    mode: str = "farfield_blended"    # {farfield, farfield_blended} BC
 
     # Farfield physical parameters
+    T_far: float = 100
     v_far: float = 0
     rho_far: float = 1
-    T_far: float = 100
 
-    # Farfield limit / simulation parameters
-    decay_tau: float = 0.05
-    beta_tau: float = 0.33
-
-    decay_beta: float = 0.1
+    # # Farfield limit / simulation parameters
+    # decay_tau: float = 0.05
+    # beta_tau: float = 0.33
+    #
+    # decay_beta: float = 0.1
 
 
 @dataclass
@@ -68,6 +79,7 @@ class ConfigEllipse(ConfigFVM):
 
     # Temporal solver parameters
     dt: float = 1e-4
+    n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
     min_A: float = 0.25e-3
@@ -96,7 +108,6 @@ class ConfigEllipse(ConfigFVM):
     plot_t: float = 0.1   # Time interval between plots
     save_t: float = 0.5    # Time interval between saves
     print_i: int = 500   # Iterations between print statements
-    n_iter: int = 50000     # Max number of iterations
     end_t: float = 20       # Max simulation time.
 
     def __post_init__(self):
@@ -115,11 +126,11 @@ class NozzleFarfield(ConfigFarfield):
     rho_far: float = 1
     T_far: float = 100
 
-    # Farfield limit / simulation parameters
-    decay_tau: float = 0.05
-    beta_tau: float = 0.33
-
-    decay_beta: float = 0.1
+    # # Farfield limit / simulation parameters
+    # decay_tau: float = 0.05
+    # beta_tau: float = 0.33
+    #
+    # decay_beta: float = 0.1
 
 
 @dataclass
@@ -138,6 +149,13 @@ class ConfigNozzle(ConfigFVM):
 
     # Temporal solver parameters
     dt: float = 1e-4
+    n_iter: int = 50000     # Max number of iterations
+
+    # Save configuration
+    plot_t: float = 0.05   # Time interval between plots
+    save_t: float = 0.5    # Time interval between saves
+    print_i: int = 500   # Iterations between print statements
+    end_t: float = 20       # Max simulation time.
 
     # mesh parameters
     min_A: float = 0.5e-3

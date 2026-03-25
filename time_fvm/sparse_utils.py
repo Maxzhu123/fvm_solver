@@ -620,7 +620,7 @@ def combine_edge_operators(A_main, A_bc, b_bc, bc_edge_mask, n_edges, n_cells, n
     return A_all.to_sparse_csr(), b_all
 
 
-def lift_sparse_matrix(A_old, n_comp):
+def lift_sparse_matrix(A_old: torch.Tensor, n_comp: int):
     """
     Lift a sparse matrix so that it acts on a flattened multi-component vector.
         U_out = torch.sparse.mm(A_old, U)   # U_out has shape (M, n_comp)
