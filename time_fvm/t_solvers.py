@@ -126,43 +126,43 @@ class TSolver(ABC):
         plt.show()
 
 
-    def _save_meshio(self, primatives):
-        """ Save as .vtu file for paraview """
-        import meshio
-        import glob, os
-
-        # Get save name
-        os.makedirs('saves', exist_ok=True)
-        vtu_files = glob.glob('./saves/*.vtu')
-        number = [int(file.replace('.vtu', '').split('_')[-1]) for file in vtu_files]
-
-        if len(number) == 0:
-            number = 0
-        else:
-            number = max(number) + 1
-        save_name = f'./saves/save_{number:05d}.vtu'
-        print(f'{save_name = }')
-
-        # Save mesh
-        E_props = self.eq.E_props
-        points = E_props.mesh.vertices.numpy()
-        cells = [("triangle", E_props.mesh.triangles.numpy())]
-        Vx, Vy, rho, T = primatives[:, 0], primatives[:, 1], primatives[:, 2], primatives[:, 3]
-        Vx, Vy, rho, T = Vx.cpu().unsqueeze(0).numpy(), Vy.cpu().unsqueeze(0).numpy(), rho.cpu().unsqueeze(0).numpy(), T.cpu().unsqueeze(0).numpy()
-
-        state = self.cells.state
-        momx, momy, E = state[:, 0], state[:, 1], state[:, 3]
-        momx, momy, E = momx.cpu().unsqueeze(0).numpy(), momy.cpu().unsqueeze(0).numpy(), E.cpu().unsqueeze(0).numpy()
-        P = self.eq.phy_setup.R * rho * T
-        mesh = meshio.Mesh(
-            points,
-            cells,
-            # Optionally provide extra data on points, cells, etc.
-            cell_data={"Vx": Vx, "Vy": Vy, "P": P, "rho": rho, "T": T, "MomX": momx, "MomY": momy, "E": E, },
-        )
-        mesh.write(
-            save_name,  # str, os.PathLike, or buffer/open file
-        )
+    # def _save_meshio(self, primatives):
+    #     """ Save as .vtu file for paraview """
+    #     import meshio
+    #     import glob, os
+    #
+    #     # Get save name
+    #     os.makedirs('saves', exist_ok=True)
+    #     vtu_files = glob.glob('./saves/*.vtu')
+    #     number = [int(file.replace('.vtu', '').split('_')[-1]) for file in vtu_files]
+    #
+    #     if len(number) == 0:
+    #         number = 0
+    #     else:
+    #         number = max(number) + 1
+    #     save_name = f'./saves/save_{number:05d}.vtu'
+    #     print(f'{save_name = }')
+    #
+    #     # Save mesh
+    #     E_props = self.eq.E_props
+    #     points = E_props.mesh.vertices.numpy()
+    #     cells = [("triangle", E_props.mesh.triangles.numpy())]
+    #     Vx, Vy, rho, T = primatives[:, 0], primatives[:, 1], primatives[:, 2], primatives[:, 3]
+    #     Vx, Vy, rho, T = Vx.cpu().unsqueeze(0).numpy(), Vy.cpu().unsqueeze(0).numpy(), rho.cpu().unsqueeze(0).numpy(), T.cpu().unsqueeze(0).numpy()
+    #
+    #     state = self.cells.state
+    #     momx, momy, E = state[:, 0], state[:, 1], state[:, 3]
+    #     momx, momy, E = momx.cpu().unsqueeze(0).numpy(), momy.cpu().unsqueeze(0).numpy(), E.cpu().unsqueeze(0).numpy()
+    #     P = self.eq.phy_setup.R * rho * T
+    #     mesh = meshio.Mesh(
+    #         points,
+    #         cells,
+    #         # Optionally provide extra data on points, cells, etc.
+    #         cell_data={"Vx": Vx, "Vy": Vy, "P": P, "rho": rho, "T": T, "MomX": momx, "MomY": momy, "E": E, },
+    #     )
+    #     mesh.write(
+    #         save_name,  # str, os.PathLike, or buffer/open file
+    #     )
 
     @torch.inference_mode()
     def solve(self):

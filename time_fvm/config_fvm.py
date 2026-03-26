@@ -11,6 +11,8 @@ class ConfigFVM(ABC):
     N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
 
     # Temporal solver parameters
+    solver_name: str = "Butcher_adapt"
+    solver_extra: str = "RK3_SSP4"
     dt: float = None
     n_iter: int = None     # Max number of iterations
 
@@ -105,7 +107,7 @@ class ConfigEllipse(ConfigFVM):
     inlet_cfg: ConfigInlet = None
 
     # Save configuration
-    plot_t: float = 0.1   # Time interval between plots
+    plot_t: float = 0.05   # Time interval between plots
     save_t: float = 0.5    # Time interval between saves
     print_i: int = 500   # Iterations between print statements
     end_t: float = 20       # Max simulation time.

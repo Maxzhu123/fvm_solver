@@ -6,7 +6,7 @@ from sparse_utils import plot_points, plot_edges, plot_interp_cell
 from fvm_mesh import FVMMesh
 from edge_process import FVMEdgeInfo
 from t_solvers import FVMCells
-from integrators import Butcher_adapt, Adams4PC
+from integrators import ButcherAdapt, Adams4PC, get_solver
 from config_fvm import ConfigFVM
 from sparse_utils import to_csr
 
@@ -135,21 +135,6 @@ class Viscosity(FVMEdgeFunc):
         self.device = device
         self.E_props = E_props
         self.stress_calc = stress_calc
-
-        #proj_mat = E_props.V_insertion_matrix # create_insertion_matrix(E_props.n_edges, E_props.n_component, [0, 1], device=device).to_sparse_csr()
-        # self.visc_mat = flux_mat @ proj_mat
-
-    # def divergence(self):
-    #     """ Viscosity is limited after computing divergence for stability """
-    #     E_props = self.E_props
-    #
-    #     tau = self.stress_calc.tau
-    #     F = (tau * E_props.normals.unsqueeze(-1)).sum(dim=-2)  # shape = [n_edges, 2]
-    #
-    #     div_visc = self.visc_mat @ F.flatten()
-    #     div_visc = div_visc.view(-1, E_props.n_comp)         # shape = [n_cells, n_comp]
-    #
-    #     return div_visc
 
     def edge_fluxes(self, fluxes=None):
         E_props = self.E_props
@@ -300,8 +285,8 @@ class FVMEquation:
         self.Heat = Heating(E_props, self.phy_setup, cfg=cfg, device=device)
         self.KT_diff = KTDiffusion(cfg.v_factor, self.phy_setup, E_props, device=device)
 
-        self.t_solver = Adams4PC(self.cells, self, cfg=cfg)
-        # self.t_solver = Butcher_adapt(self.cells, self, name="RK3_SSP4", cfg=cfg)
+        # self.t_solver = Adams4PC(self.cells, self, cfg=cfg)
+        self.t_solver = get_solver(self.cells, self, cfg) #ButcherAdapt(self.cells, self, name="RK3_SSP4", cfg=cfg)
 
         E_props.clear_temp()
         c_print("Done FVMEquation", color="bright_magenta")
@@ -357,7 +342,7 @@ class FVMEquation:
         D_indices = torch.stack([row_indices, col_indices])
 
         D_shape = [n_tri, n_edges]
-        flux_mat = torch.sparse_coo_tensor(D_indices, D_values, size=D_shape, device="cpu", dtype=dtype).coalesce()# .cuda().to_sparse_csr()
+        flux_mat = torch.sparse_coo_tensor(D_indices, D_values, size=D_shape, device="cpu", dtype=dtype).coalesce()
         flux_mat = to_csr(flux_mat, self.device)
         return flux_mat
 

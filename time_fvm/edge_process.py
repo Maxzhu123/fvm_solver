@@ -2,13 +2,13 @@ from typing import TYPE_CHECKING
 from cprint import c_print
 import torch
 
-from time_fvm.fvm_mesh import FVMMesh
 from time_fvm.fvm_store import Edge
-from time_fvm.config_fvm import ConfigFVM
 from time_fvm.sparse_utils import lift_sparse_matrix, combine_edge_operators, to_csr
 from time_fvm.edge_boundary import BoundarySetter
 if TYPE_CHECKING:
     from time_fvm.fvm_equation import PhysicalSetup
+    from time_fvm.fvm_mesh import FVMMesh
+    from time_fvm.config_fvm import ConfigFVM
 
 class SlopeLimiter:
     def __init__(self, areas, cfg: ConfigFVM):

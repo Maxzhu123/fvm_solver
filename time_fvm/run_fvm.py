@@ -124,7 +124,7 @@ def main():
 
     new_mesh = True
 
-    cfg = ConfigEllipse()
+    cfg = ConfigNozzle()
 
     # Useful to set some parameters here
     T_nat = 100
@@ -158,6 +158,7 @@ def main():
         bc_tags, us_init = init_conds_nozzle(mesh, edge_tag, bound_edgs, cfg, vx=V_x_nat, rho=rho_nat, T=T_nat)
     else:
         raise ValueError(f'Unknown mode {cfg.problem_setup}')
+
     solver = FVMEquation(cfg, mesh, cfg.N_comp, bc_tags, us_init=us_init)
     solver.solve()
 
