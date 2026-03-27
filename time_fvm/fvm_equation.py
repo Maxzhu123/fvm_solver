@@ -6,7 +6,7 @@ from sparse_utils import plot_points, plot_edges, plot_interp_cell
 from fvm_mesh import FVMMesh
 from edge_process import FVMEdgeInfo
 from t_solvers import FVMCells
-from integrators import ButcherAdapt, Adams4PC, get_solver
+from integrators import get_solver
 from config_fvm import ConfigFVM
 from sparse_utils import to_csr
 
@@ -16,7 +16,7 @@ class PhysicalSetup:
     P_face: torch.Tensor    # shape = [n_edges, 2, 1]
     c: torch.Tensor         # shape = [n_edges, 2, 1]
 
-    def __init__(self, cfg: ConfigFVM, device="cpu"):
+    def __init__(self, cfg: ConfigFVM):
         self.device = cfg.device
 
         self.T_0 = cfg.T_0
@@ -24,18 +24,30 @@ class PhysicalSetup:
         self.mu = cfg.viscosity
         self.mu_b = cfg.visc_bulk
         self.S_const = cfg.S_const
-        self.R = cfg.C_v * (cfg.gamma - 1)
-        self.C_v_inv = 1 / cfg.C_v
+        self.C_v = cfg.C_v
+        self.R = self.C_v * (cfg.gamma - 1)
+        self.C_v_inv = 1 / self.C_v
 
-    def state_to_primative(self, state):
-        """ Convert """
-        momentum, density, Q = state[:, [0, 1]], state[:,[2]], state[:,[3]]
+    def state_to_primative(self, state: torch.Tensor):
+        """ Convert from conserved quantities (momentum, rho, energy) to primitives (velocity, rho, T) """
+        momentum, rho, Q = state[:, [0, 1]], state[:,[2]], state[:,[3]]
 
-        V = momentum / density
-        T = self.C_v_inv * (Q / density - 0.5 * V.norm(dim=1, keepdim=True) ** 2)
-        primatives = torch.cat([V, density, T], dim=-1)
+        V = momentum / rho
+        T = self.C_v_inv * (Q / rho - 0.5 * V.norm(dim=1, keepdim=True) ** 2)
+        primatives = torch.cat([V, rho, T], dim=-1)
 
         return primatives, state
+
+    def primatives_to_state(self, V, rho, T):
+        """ Convert from primitives (velocity, rho, T) to conserved quantities (momentum, rho, energy)
+            V.shape = [..., 2]
+            rho.shape = [..., 1]
+            T.shape = [..., 1]
+         """
+
+        momentum = V * rho
+        Q = rho * (self.C_v * T + 0.5 * V.norm(dim=-1, keepdim=True) ** 2)
+        return momentum, rho, Q
 
     def _tau(self,  E_props: FVMEdgeInfo):
         """ Compute stress tensor:
@@ -261,8 +273,9 @@ class FVMEquation:
     cells: FVMCells
     n_comp: int
 
-    def __init__(self, cfg: ConfigFVM, mesh: FVMMesh, n_comp, bc_tag, us_init=None):
+    def __init__(self, cfg: ConfigFVM, phy_setup: PhysicalSetup, mesh: FVMMesh, n_comp, bc_tag, us_init=None):
         self.cfg = cfg
+        self.phy_setup = phy_setup
         self.device = cfg.device
         self.mesh = mesh
         self.n_comp = n_comp
@@ -270,7 +283,6 @@ class FVMEquation:
         device = self.device
 
         # Physical parameters
-        self.phy_setup = PhysicalSetup(cfg=cfg, device=device)
 
         E_props = FVMEdgeInfo(self.phy_setup, cfg, mesh, n_comp, bc_tag, device=device)
         self.cells = FVMCells(mesh.n_cells, n_comp, init_val=us_init, phys_setup=self.phy_setup, device=device)

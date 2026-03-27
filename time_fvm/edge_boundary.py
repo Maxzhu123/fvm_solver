@@ -343,6 +343,7 @@ class FarfieldBC:
 class InletBC:
     inlet_mask: torch.Tensor        # shape = [n_edges_bc]
     inlet_normals: torch.Tensor     # shape = [n_inlet_edges, 2]
+
     def __init__(self, phy_setup: PhysicalSetup, cfg: ConfigFVM, inlet_mask, inlet_normals):
         """ Inlet boundary condition.
             inlet_normals must point inward.
@@ -352,7 +353,6 @@ class InletBC:
         self.inlet_mask = inlet_mask
         self.inlet_normals = inlet_normals
 
-        self.C_v = cfg.C_v
         self.R = self.cfg.R
         self.gamma = self.cfg.gamma
 

@@ -5,7 +5,7 @@ from abc import ABC
 @dataclass
 class ConfigFVM(ABC):
     device: str = "cuda"
-    compile: bool = True
+    compile: bool = False
 
     problem_setup: str = None    # {ellipse, nozzle}
     N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
@@ -42,14 +42,15 @@ class ConfigFVM(ABC):
     lim_K: int = 0.1
 
     def __post_init__(self):
-        self.exit_cfg = ConfigFarfield()
-        self.inlet_cfg = ConfigInlet()
+        self.exit_cfg = EllipseFarfield()
+        self.inlet_cfg = EllipseInlet()
 
         self.R = (self.gamma - 1) * self.C_v        # specific gas constant
 
+# ------------------------------- Ellipse-specific configurations -------------------------------
 
 @dataclass
-class ConfigFarfield:
+class EllipseFarfield:
     mode: str = "farfield_blended"    # {farfield, farfield_blended} BC
 
     # Farfield physical parameters
@@ -65,7 +66,7 @@ class ConfigFarfield:
 
 
 @dataclass
-class ConfigInlet:
+class EllipseInlet:
     mode: str = "inlet"
 
     # Target inlet physical parameters
@@ -73,7 +74,6 @@ class ConfigInlet:
     rho_nat = 1
     V_x_nat = 5.5
 
-# ------------------------------- Ellipse-specific configurations -------------------------------
 
 @dataclass
 class ConfigEllipse(ConfigFVM):
@@ -103,8 +103,8 @@ class ConfigEllipse(ConfigFVM):
     lim_K: int = 0.1
 
     # BC parameters
-    exit_cfg: ConfigFarfield = None
-    inlet_cfg: ConfigInlet = None
+    exit_cfg: EllipseFarfield = None
+    inlet_cfg: EllipseInlet = None
 
     # Save configuration
     plot_t: float = 0.05   # Time interval between plots
@@ -113,14 +113,14 @@ class ConfigEllipse(ConfigFVM):
     end_t: float = 20       # Max simulation time.
 
     def __post_init__(self):
-        self.exit_cfg = ConfigFarfield()
-        self.inlet_cfg = ConfigInlet()
+        self.exit_cfg = EllipseFarfield()
+        self.inlet_cfg = EllipseInlet()
 
         self.R = (self.gamma - 1) * self.C_v        # specific gas constant
 
 # ------------------------------- Nozzle-specific configurations -------------------------------
 @dataclass
-class NozzleFarfield(ConfigFarfield):
+class NozzleFarfield(EllipseFarfield):
     mode: str = "farfield_blended"    # {decay, farfield, farfield_blended, adaptive, interior} BC
 
     # Farfield physical parameters
@@ -136,12 +136,12 @@ class NozzleFarfield(ConfigFarfield):
 
 
 @dataclass
-class NozzleInlet(ConfigInlet):
+class NozzleInlet(EllipseInlet):
     mode: str = "inlet"
 
     # Target inlet physical parameters
-    T_nat = 100
-    rho_nat = 1
+    T_nat = 400
+    rho_nat = 2
     V_x_nat = 0
 
 
@@ -180,8 +180,10 @@ class ConfigNozzle(ConfigFVM):
     lim_K: int = 0.1
 
     # BC parameters
-    exit_cfg: ConfigFarfield = None
-    inlet_cfg: ConfigInlet = None
+    exit_cfg: NozzleFarfield = None
+    inlet_cfg: NozzleInlet = None
+    inlet_T: float = 400.
+    inlet_rho: float = 2
 
     def __post_init__(self):
         self.exit_cfg = NozzleFarfield()

@@ -147,8 +147,6 @@ class FVMEdgeInfo:
         self.n_comp = n_comp
         self.slope_limiter = SlopeLimiter(mesh.areas.to(device), cfg)
 
-        self.C_v = cfg.C_v
-
         self.edge_to_tri_main = mesh.edge_to_tri_main.to(device)
         self.cent_to_edge_disp = mesh.cent_to_edge_disp.to(device).unsqueeze(-1)
         self.tri_edge_signs = (-self.mesh.tri_edge_signs + 1 / 2).to(torch.int32).view(3*self.n_cells).to(device)
@@ -290,8 +288,7 @@ class FVMEdgeInfo:
         self.div_V_faces = U_face_all[:, :, 4]  # shape = [n_edges, edges=2]
 
         # Conserved quantities
-        self.mom_faces = self.Vs_faces * self.rho_faces  # shape = [n_edges, edges=2, dims=2]
-        self.Q_faces = self.rho_faces * (1/2  * self.Vs_faces.norm(dim=-1, keepdim=True) ** 2 + self.C_v * self.T_faces)
+        self.mom_faces, _, self.Q_faces = self.phy_setup.primatives_to_state(self.Vs_faces, self.rho_faces, self.T_faces)
         self.phi = (self.Vs_faces * self.normals.unsqueeze(1)).sum(dim=-1) # shape = [n_edges, edges=2, ]
 
         # Non-orthogonal correction for face gradient. Assume lstsq gradient is mean of left and right cell.

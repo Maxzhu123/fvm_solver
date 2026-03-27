@@ -2,12 +2,12 @@ from cprint import c_print
 import torch
 import numpy as np
 
+from mesh_gen.meshes_fvm import gen_mesh_nozzle, gen_rand_mesh
 from base_cfg import ARTEFACT_DIR
 from time_fvm.fvm_store import EdgeBCTypes as E
 from time_fvm.fvm_store import Edge
 from time_fvm.fvm_mesh import FVMMesh
-from time_fvm.fvm_equation import FVMEquation
-from mesh_gen.meshes_fvm import gen_mesh_nozzle, gen_rand_mesh
+from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
 from time_fvm.config_fvm import ConfigFVM, ConfigNozzle, ConfigEllipse
 
 
@@ -34,9 +34,10 @@ def generate_mesh(cfg: ConfigFVM):
     return Xs, tri_idx, all_edgs, bc_edge_mask, edge_tag, bound_edgs
 
 
-def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, cfg: ConfigFVM,
-                        vx=5., vy=0., rho=1., T=100.):
-
+def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigNozzle,
+                      vx=5., vy=0., rho=1., T=100.):
+    T_in = cfg.inlet_T
+    rho_in = cfg.inlet_rho
     # Boundary conditions
     centroids = mesh.centroids
     Xs = mesh.vertices
@@ -45,15 +46,9 @@ def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, cfg: ConfigFVM,
         if e_tag == "NavierWall":
             bc_tags[bc_idx] = Edge([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0])
         elif e_tag == "Side":
-            # bc_tags[bc_idx] = Edge([E.Neuman, E.Neuman, E.Dirich, E.Dirich], [None, None, 0.5, 100], [0, 0, None, None])
             bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
-
         elif e_tag == "Left":
-            X0, X1 = Xs[e_vert]
-            x0, y0 = X0
-            x1, y1 = X1
-            T = 400 # if (y0+y1)/2 > 0.7 else 250
-            bc_tags[bc_idx] = Edge([E.Neuman, E.Dirich, E.Dirich, E.Dirich], [None, 0, 2, T], [0, None, None, None])
+            bc_tags[bc_idx] = Edge([E.Neuman, E.Dirich, E.Dirich, E.Dirich], [None, 0, rho_in, T_in], [0, None, None, None])
         elif e_tag == "Right":
             bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
         else:
@@ -62,22 +57,20 @@ def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, cfg: ConfigFVM,
     # Initial conditions
     x, y = centroids[:, 0], centroids[:, 1]
 
-    us_init = torch.zeros_like(x).unsqueeze(1).repeat(1, 4)
-    us_init[:, 0] = 0
-    us_init[:, 1] = 0
-    us_init[:, 2] = 2 * (x<.4) + 1. * (x>.4)
-    us_init[:, 3] = 400 * (x<.4) + 100 * (x>.4)
+    prims_init = torch.zeros_like(x).unsqueeze(1).repeat(1, 4)
+    prims_init[:, 0] = 0
+    prims_init[:, 1] = 0
+    prims_init[:, 2] = rho_in * (x < .4) + rho * (x > .4)
+    prims_init[:, 3] = T_in * (x < .4) + T * (x > .4)
 
-    # Energy: C_v * T + 0.5 * (u^2 + v^2)
-    energy = cfg.C_v * us_init[:, 3] + 0.5 * (us_init[:, 0] ** 2 + us_init[:, 1] ** 2)
-    us_init[:, 3] = energy * us_init[:, 2]  # Energy density
-    # Convert to momentum
-    us_init[:, 0] = us_init[:, 0] * us_init[:, 2]
-    us_init[:, 1] = us_init[:, 1] * us_init[:, 2]
-    return bc_tags, us_init
+    V, rho, T = prims_init[:, :2], prims_init[:, 2:3], prims_init[:, 3:]
+
+    momentum, rho, Q = phy_setup.primatives_to_state(V, rho, T)
+    Us_init = torch.cat([momentum, rho, Q], dim=-1)
+    return bc_tags, Us_init
 
 
-def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, cfg: ConfigFVM,
+def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigEllipse,
                vx=5., vy=0., rho=1., T=100.):
     # Boundary conditions
     centroids = mesh.centroids
@@ -102,19 +95,17 @@ def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, cfg: ConfigFVM,
     # Initial conditions
     x, y = centroids[:, 0], centroids[:, 1]
 
-    us_init = torch.zeros_like(x).unsqueeze(1).repeat(1, 4)
-    us_init[:, 0] = vx
-    us_init[:, 1] = vy
-    us_init[:, 2] = rho
-    us_init[:, 3] = T
+    prims_init = torch.zeros_like(x).unsqueeze(1).repeat(1, 4)
+    prims_init[:, 0] = vx
+    prims_init[:, 1] = vy
+    prims_init[:, 2] = rho
+    prims_init[:, 3] = T
 
-    # Energy: C_v * T + 0.5 * (u^2 + v^2)
-    energy = cfg.C_v * us_init[:, 3] + 0.5 * (us_init[:, 0] ** 2 + us_init[:, 1] ** 2)
-    us_init[:, 3] = energy * us_init[:, 2]  # Energy density
-    # Convert to momentum
-    us_init[:, 0] = us_init[:, 0] * us_init[:, 2]
-    us_init[:, 1] = us_init[:, 1] * us_init[:, 2]
-    return bc_tags, us_init
+    V, rho, T = prims_init[:, :2], prims_init[:, 2:3], prims_init[:, 3:]
+
+    momentum, rho, Q = phy_setup.primatives_to_state(V, rho, T)
+    Us_init = torch.cat([momentum, rho, Q], dim=-1)
+    return bc_tags, Us_init
 
 
 def main():
@@ -124,7 +115,8 @@ def main():
 
     new_mesh = True
 
-    cfg = ConfigNozzle()
+    cfg = ConfigEllipse()
+    phy_setup = PhysicalSetup(cfg)
 
     # Useful to set some parameters here
     T_nat = 100
@@ -152,14 +144,15 @@ def main():
 
     print(f'{mesh.areas.min() = }')
 
+    # Set up initial conditions.
     if cfg.problem_setup == "ellipse":
-        bc_tags, us_init = init_conds_ellipses(mesh, edge_tag, bound_edgs, cfg, vx=V_x_nat, rho=rho_nat, T=T_nat)
+        bc_tags, us_init = init_conds_ellipses(mesh, edge_tag, bound_edgs, phy_setup, cfg, vx=V_x_nat, rho=rho_nat, T=T_nat)
     elif cfg.problem_setup == "nozzle":
-        bc_tags, us_init = init_conds_nozzle(mesh, edge_tag, bound_edgs, cfg, vx=V_x_nat, rho=rho_nat, T=T_nat)
+        bc_tags, us_init = init_conds_nozzle(mesh, edge_tag, bound_edgs, phy_setup, cfg, vx=V_x_nat, rho=rho_nat, T=T_nat)
     else:
         raise ValueError(f'Unknown mode {cfg.problem_setup}')
 
-    solver = FVMEquation(cfg, mesh, cfg.N_comp, bc_tags, us_init=us_init)
+    solver = FVMEquation(cfg, phy_setup, mesh, cfg.N_comp, bc_tags, us_init=us_init)
     solver.solve()
 
 
