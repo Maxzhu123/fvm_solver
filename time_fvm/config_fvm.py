@@ -1,11 +1,19 @@
 from dataclasses import dataclass
 from abc import ABC
+from enum import Enum
+
+
+class BCMode(Enum):
+    Isentropic = "Isentropic"
+    Characteristic = "characteristic"
+    Farfield = "Farfield"
+    FarfieldBlended = "Farfield_Blended"
 
 
 @dataclass
 class ConfigFVM(ABC):
     device: str = "cuda"
-    compile: bool = False
+    compile: bool = True
 
     problem_setup: str = None    # {ellipse, nozzle}
     N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
@@ -35,44 +43,48 @@ class ConfigFVM(ABC):
     S_const: float = None       # Sutherland's constant
     gamma: float = None  # Ratio of specific heats
     C_v: float = None     # Specific heat at constant volume
+    R: float = None         # specific gas constant
 
     # Stability parameters
     v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
     lim_p: int = 4          # Order of limiter (1 for BJ)
     lim_K: int = 0.1
 
-    def __post_init__(self):
-        self.exit_cfg = EllipseFarfield()
-        self.inlet_cfg = EllipseInlet()
+    # Boundary Configuration
+    exit_cfg: ConfigBC = None
+    inlet_cfg: ConfigBC = None
 
-        self.R = (self.gamma - 1) * self.C_v        # specific gas constant
+
+class ConfigBC(ABC):
+    mode: BCMode
+    # Farfield physical parameters
+    v_n_inf: float
+    v_t_inf: float
+    rho_inf: float
+    T_inf: float
+
 
 # ------------------------------- Ellipse-specific configurations -------------------------------
-
 @dataclass
-class EllipseFarfield:
-    mode: str = "farfield_blended"    # {farfield, farfield_blended} BC
+class EllipseFarfield(ConfigBC):
+    mode: BCMode = BCMode.Characteristic
 
     # Farfield physical parameters
-    T_far: float = 100
-    v_far: float = 0
-    rho_far: float = 1
-
-    # # Farfield limit / simulation parameters
-    # decay_tau: float = 0.05
-    # beta_tau: float = 0.33
-    #
-    # decay_beta: float = 0.1
+    v_n_inf: float = -5.5
+    v_t_inf: float = 0
+    rho_inf: float = 1
+    T_inf: float = 100
 
 
 @dataclass
-class EllipseInlet:
-    mode: str = "inlet"
+class EllipseInlet(ConfigBC):
+    mode: BCMode = BCMode.Characteristic
 
     # Target inlet physical parameters
-    T_nat = 100
-    rho_nat = 1
-    V_x_nat = 5.5
+    v_n_inf = 5.5
+    v_t_inf: float = 0
+    rho_inf = 1
+    T_inf = 100
 
 
 @dataclass
@@ -120,29 +132,25 @@ class ConfigEllipse(ConfigFVM):
 
 # ------------------------------- Nozzle-specific configurations -------------------------------
 @dataclass
-class NozzleFarfield(EllipseFarfield):
-    mode: str = "farfield_blended"    # {decay, farfield, farfield_blended, adaptive, interior} BC
+class NozzleFarfield(ConfigBC):
+    mode: BCMode = BCMode.Characteristic
 
     # Farfield physical parameters
-    v_far: float = 0
-    rho_far: float = 1
-    T_far: float = 100
-
-    # # Farfield limit / simulation parameters
-    # decay_tau: float = 0.05
-    # beta_tau: float = 0.33
-    #
-    # decay_beta: float = 0.1
+    v_n_inf: float = 0
+    v_t_inf: float = 0
+    rho_inf: float = 1
+    T_inf: float = 100
 
 
 @dataclass
-class NozzleInlet(EllipseInlet):
-    mode: str = "inlet"
+class NozzleInlet(ConfigBC):
+    mode: BCMode = BCMode.Characteristic
 
     # Target inlet physical parameters
-    T_nat = 400
-    rho_nat = 2
-    V_x_nat = 0
+    v_n_inf: float = 0
+    v_t_inf: float = 0
+    rho_inf: float = 2.5
+    T_inf: float = 400
 
 
 @dataclass
@@ -154,7 +162,7 @@ class ConfigNozzle(ConfigFVM):
     n_iter: int = 50000     # Max number of iterations
 
     # Save configuration
-    plot_t: float = 0.05   # Time interval between plots
+    plot_t: float = 0.1   # Time interval between plots
     save_t: float = 0.5    # Time interval between saves
     print_i: int = 500   # Iterations between print statements
     end_t: float = 20       # Max simulation time.
@@ -182,8 +190,7 @@ class ConfigNozzle(ConfigFVM):
     # BC parameters
     exit_cfg: NozzleFarfield = None
     inlet_cfg: NozzleInlet = None
-    inlet_T: float = 400.
-    inlet_rho: float = 2
+
 
     def __post_init__(self):
         self.exit_cfg = NozzleFarfield()

@@ -1,69 +1,279 @@
 from typing import TYPE_CHECKING
 import torch
-import math
 
-from time_fvm.config_fvm import ConfigFVM
+from time_fvm.config_fvm import ConfigFVM, BCMode, ConfigBC
 from time_fvm.sparse_utils import to_csr
 if TYPE_CHECKING:
+    from torch import Tensor
     from time_fvm.edge_process import FVMEdgeInfo
     from time_fvm.fvm_equation import PhysicalSetup
 
 
-class FarfieldBC:
-    set_bc_U_face: callable
+class BC:
+    bc_normals: Tensor     # shape = [n_inlet_edges, 2]
+    bc_tangents: Tensor
 
-    def __init__(self, phy_setup: PhysicalSetup, cfg: ConfigFVM, farfield_mask, farfield_normals):
-        self.device = cfg.device
+    def __init__(self, phy_setup: PhysicalSetup, cfg: ConfigFVM, bc_cfg: ConfigBC, bc_mask: Tensor, bc_normals: Tensor):
+        """
+        Generalised boundary condition.
+        args:
+            phy_setup: PhysicalSetup, contains EOS and other physics-specific functions.
+            cfg: ConfigFVM, contains general configuration parameters.
+            bc_cfg: ConfigBC, contains boundary condition specific parameters and mode.
+            bc_mask: Tensor, shape [n_bc], which edges are set for this BC.
+            bc_normals: Tensor, shape [n_bc], Outward pointing normals for boundary edges.
+        """
 
-        self.phy_setup = phy_setup
         self.cfg = cfg
-        self.exit_cfg = cfg.exit_cfg
+        self.device = cfg.device
+        self.phy_setup = phy_setup
 
-        self.farfield_mask = farfield_mask
-        self.farfield_normals = farfield_normals
-        self.farfield_idx = torch.where(farfield_mask)[0]
+        # Boundary geometry
+        self.bc_mask = bc_mask
+        self.bc_normals = bc_normals
+        self.bc_tangents = torch.stack((-bc_normals[:, 1], bc_normals[:, 0]), dim=1)
+        self.bc_idx = torch.where(bc_mask)[0]
 
-        self.R = self.cfg.R
-        self.gamma = self.cfg.gamma
+        # Shared boundary parameters
+        self.T_inf = torch.tensor(bc_cfg.T_inf, device=self.device)
+        self.rho_inf = torch.tensor(bc_cfg.rho_inf, device=self.device)
+        self.v_n_inf = - torch.tensor(bc_cfg.v_n_inf, device=self.device)  # Since inlet edge points outwards
+        self.v_t_inf = torch.tensor(bc_cfg.v_t_inf, device=self.device)
+        p_inf = self.phy_setup.eos_P(self.rho_inf, self.T_inf)
+        a_inf = self.phy_setup.eos_c(self.rho_inf, self.T_inf)
 
-        v_far = torch.tensor(self.exit_cfg.v_far, device=self.device)
-        rho_far = torch.tensor(self.exit_cfg.rho_far, device=self.device)
-        T_far = torch.tensor(self.exit_cfg.T_far, device=self.device)
-        # Precompute some farfield invariants
-        P_far = self.phy_setup.eos_P(rho_far, T_far) #rho_far * T_far * self.R
-        a_far = self.phy_setup.eos_c(rho_far, T_far) #math.sqrt(self.gamma * self.R * T_far)
+        # Set stagnation condition to be similar to natural parameters.
+        match bc_cfg.mode:
+            # Characteristic boundary condition
+            case BCMode.Characteristic:
+                self.set_bc_U_face = self.BC_characteristic
 
-        if self.exit_cfg.mode == "farfield":
-            self.set_bc_U_face = self.__farfield_neuman
-            self.factor = 1
-            self.R_far = v_far - 2 * a_far / (self.gamma - 1)
-        elif self.exit_cfg.mode == "farfield_blended":
-            self.set_bc_U_face = self.__farfield_blended
-            self.factor = 1
-            self.R_m_far = v_far - 2 * a_far / (self.gamma - 1)
-            self.R_p_far = v_far + 2 * a_far / (self.gamma - 1)
-            self.S_far = P_far / (rho_far ** self.gamma)
-        else:
-            raise NotImplementedError("Not currently implemented. ")
-        # elif self.exit_cfg.mode == "adaptive":
-        #     self.set_bc_U_face = self.__adaptive
-        #     self.dR_m = 0
-        #     self.R_m = v_far - 2 * a_far / (self.gamma - 1)
-        #     self.P_far = P_far
-        #     self.tau = self.exit_cfg.decay_tau
-        #     self.decay_beta = self.exit_cfg.decay_beta
-        # elif self.exit_cfg.mode == "interior":
-        #     self.beta = 1 - 1 / self.exit_cfg.beta_tau
-        #     self.set_bc_U_face = self.__interior
-        # elif self.exit_cfg.mode == "decay":
-        #     self.set_bc_U_face = self.__decay
-        #     self.tau = 1 / self.exit_cfg.decay_tau
-        #     self.decay_beta = self.exit_cfg.decay_beta
-        #     self.rho_far = rho_far
-        #     self.v_far = v_far
-        #     self.factor = 1
+                self.p_inf = p_inf
+                # We use this a lot
+                self.ones = torch.ones(self.bc_mask.sum(), device=cfg.device)  # shape = [n_inlet]
 
-    def __farfield(self, U_face, Us_bc_cells, dt):
+            # Isentropic boundary condition
+            case BCMode.Isentropic:
+                self.set_bc_U_face = self.BC_isentropic
+
+                self.gamma = self.cfg.gamma
+                # Get stagnation conditions
+                M_inf = self.v_n_inf / a_inf
+                self.p_0 = p_inf * (1 + (self.gamma - 1) / 2 * M_inf ** 2) ** (self.gamma / (self.gamma - 1))
+                self.T_0 = self.T_inf * (1 + (self.gamma - 1) / 2 * M_inf ** 2)
+
+            # Farfield boundary condition
+            case BCMode.Farfield:
+                self.set_bc_U_face = self.BC_farfield
+
+                self.R = self.cfg.R
+                self.gamma = self.cfg.gamma
+                self.R_far = self.v_n_inf - 2 * a_inf / (self.gamma - 1)
+
+            # Farfield blended boundary condition
+            case BCMode.FarfieldBlended:
+                self.set_bc_U_face = self.BC_farfield_blended
+
+                self.R = self.cfg.R
+                self.gamma = self.cfg.gamma
+                self.R_m_far = self.v_n_inf - 2 * a_inf / (self.gamma - 1)
+                self.R_p_far = self.v_n_inf + 2 * a_inf / (self.gamma - 1)
+                self.S_far = p_inf / (self.rho_inf ** self.gamma)
+
+            case _ :
+                raise NotImplementedError(f"Unknown Inlet Mode {bc_cfg.mode = }")
+
+    def _construct_R(self, c: Tensor, rho: Tensor, ones=None):
+        """ Construct R and R^-1 for the characteristic decomposition.
+            A = [   [u, rho,        0       ],
+                    [0, u,          1/rho   ],
+                    [0, rho*c**2,   u       ]]
+            Decompose A = R D R^-1
+
+            c: shape = [n_bc]
+            rho: shape = [n_bc]
+            R: shape = [n_bc, 3, 3]
+            R^-1: shape = [n_bc, 3, 3]
+        """
+        # Use cached ones matrix if needed.
+        if ones is None:
+            ones = self.ones
+
+        zeros = torch.zeros_like(ones)
+        c_sq = c ** 2
+
+        R = torch.stack([
+            torch.stack([ones, ones, ones], dim=1),
+            torch.stack([-c / rho, zeros, c / rho], dim=1),
+            torch.stack([c_sq, zeros, c_sq], dim=1),
+        ], dim=1)  # shape = [n_inlet, 3, 3]
+
+        R_inv = torch.stack([
+            torch.stack([zeros, -rho / (2 * c), 1 / (2 * c_sq)], dim=1),
+            torch.stack([ones, zeros, -1 / c_sq], dim=1),
+            torch.stack([zeros, rho / (2 * c), 1 / (2 * c_sq)], dim=1),
+        ], dim=1)
+
+        return R, R_inv
+
+    def _split_Vs(self, Vs):
+        """ Split velocity into normal and tangential components.
+            Vs: shape = [n_bc, 2]
+            Return V_n, V_t: shape = [n_bc], [n_bc]
+        """
+        n = self.bc_normals
+        t = self.bc_tangents
+
+        v_n = (Vs * n).sum(dim=1)
+        v_t = (Vs * t).sum(dim=1)
+
+        return v_n, v_t
+
+    def _recombine_Vs(self, v_n, v_t):
+        """ Combine normal and tangential component of Vs back into x-y components."
+            V_n: shape = [n_bc]
+            V_t: shape = [n_bc]
+            Return V_x, v_y: shape = [n_bc]
+        """
+        n = self.bc_normals
+        t = self.bc_tangents
+
+        V = v_n.unsqueeze(-1) * n + v_t.unsqueeze(-1) * t
+        v_x, v_y = V[:, 0], V[:, 1]
+
+        return v_x, v_y, V
+
+    def _gating(self, v_n_int, c_int):
+        """ Gating for forward and backward characteristics.
+            v_n_int.shape = [n_bc]
+            return.shape = [n_bc, 3]
+        """
+        lambda_vals = torch.stack([v_n_int - c_int, v_n_int, v_n_int + c_int], dim=-1)  # shape = [n_bc, 3]
+        c = c_int.mean()
+        lambda_scaled = (10/c) * lambda_vals                # shape = [n_bc, 3]
+        gating = 0.5 * (1 - torch.tanh(lambda_scaled))
+
+        return gating
+
+    def set_bc_U_face(self, U_face, Us_bc_cells, dt):
+        """ Set U_face.
+            U_face: shape = [n_edges, n_comp], all boundary edges. Set value in place, given by mask.
+            Us_bc_cells: shape = [n_bc_edges, n_comp], cell values at boundary edges.
+        """
+        raise NotImplementedError
+
+    # ------------------------------- Specific BC implementations -------------------------------
+    def BC_characteristic(self, U_face, Us_bc_cells, dt):
+        """ Characteristic BC.
+            Use W = (rho, v_n, p) -> dW/dt + div(f(W)) = 0
+            Linearize using W = W_int + delta W
+            Diagonalise equations
+            Then solve for delta W_b by continuing characteristics from the left and right side.
+            Tangential velocity is interpolated as well.
+
+            U_face.shape = [n_bc_edges, n_comp], all boundary edges. Set value in place, given by mask.
+            Us_bc_cells.shape = [n_inlet, n_comp], cell values at boundary edges.
+        """
+        # 1) Interior properties
+        v_n_int, v_t_int = self._split_Vs(Us_bc_cells[:, [0, 1]])           # shape = [n_inlet]
+        rho_int = Us_bc_cells[:, 2]  # shape = [n_inlet]
+        T_int = Us_bc_cells[:, 3]  # shape = [n_inlet]
+        # Convert basis to W = (rho, v_n, p)
+        p_int = self.phy_setup.eos_P(rho_int, T_int)
+        W_int = torch.stack([rho_int, v_n_int, p_int], dim=-1)  # shape = [n_inlet, 3]
+        # Interior speed of sound
+        c_int = self.phy_setup.eos_c(rho_int, T_int)
+
+        # 2) Exterior properties
+        rho_inf = self.rho_inf
+        v_n_inf = self.v_n_inf
+        p_inf = self.p_inf
+        W_inf = torch.stack([rho_inf, v_n_inf, p_inf]) # shape = [3]
+
+        # 3) Get transformation from dW basis to orthogonal dChi basis, decompose A = R D R^-1,
+        R, R_inv = self._construct_R(c_int, rho_int)
+
+        # 4) Compute dW and project into dChi space:
+        dW_inf = W_inf - W_int
+        # dChi = R^-1 dW to diagonalise the system into forward and backward components
+        dChi_inf = (R_inv @ dW_inf.unsqueeze(-1)).squeeze()           # shape = [n_inlet, 3]
+
+        # 5) Filter incoming and outgoing components. Transition smoothly on scale O(c)
+        gating = self._gating(v_n_int, c_int)
+        dChi_b = gating * dChi_inf        # shape = [n_inlet, 3]
+        # 5.1) Tangential velocity is also interpolated using the gating
+        v_t_int = gating[:, 1] * v_t_int + (1-gating[:, 1]) * self.v_t_inf
+
+        # 6) Convert back to dW = R dChi,
+        dW_b = (R @ dChi_b.unsqueeze(-1)).squeeze()                         # shape = [n_inlet, 3]
+        W_b = W_int + dW_b
+
+        # 7) Convert back to primatives
+        rho_b = W_b[:, 0]
+        # Keep tangential velocity from interior.
+        v_n_b = W_b[:, 1]
+        v_x_b, v_y_b, _ = self._recombine_Vs(v_n_b, v_t_int)
+        # Convert pressure back into temperature
+        p_b = W_b[:, 2]
+        T_b = self.phy_setup.eos_T(rho_b, p_b)
+
+        # Inplace update for U_face.
+        U_face_b = torch.stack([v_x_b, v_y_b, rho_b, T_b], dim=-1)
+        U_face[self.bc_mask] = U_face_b
+
+    def BC_isentropic(self, U_face, Us_bc_cells, dt):
+        """ Subsonic inlet boundary conditions based on isentropic flow relations (Adiabatic).
+            Ideal gas only.
+        Given stagnation (total) conditions p_0 and T_0, we compute the boundary state by combining interior flow.
+        1. Pressure ratio (isentropic relation):
+           p_0/p = (1 + (γ-1)/2 * M²)^(γ/(γ-1))
+        2. Temperature ratio (isentropic relation):
+           T_0/T = 1 + (γ-1)/2 * M²
+        3. Speed of sound:
+           a = √(γ * R * T)
+        4. Mach number definition:
+           M = V/a
+
+        - p and T are computed from interior cell values, p=p_int, T=T_int
+        - Backflow prevention: p_ratio is clamped to be ≥ 1 + ε to ensure M_bc ≥ 0
+        - The tangential velocity component is preserved from the interior flow
+
+        Parameters:
+        U_face : torch.Tensor, shape [n_edges_bc, n_comp]
+            Boundary face values to be modified in place
+        Us_bc_cells : torch.Tensor, shape [n_inlet_edges, n_comp]
+            Interior cell values adjacent to inlet edges [V_x, V_y, ρ, T]
+        dt : float
+            Time step (unused, kept for interface compatibility)
+        """
+
+        V_int = Us_bc_cells[:, [0, 1]]  # shape = [n_inlet_edge, 2]
+        rho_int = Us_bc_cells[:, 2]  # shape = [n_inlet_edge]
+        T_int = Us_bc_cells[:, 3]  # shape = [n_inlet_edge]
+
+        # Helper basis uses outward normals; inlet formulas below use inward normals.
+        _, v_t_int = self._split_Vs(V_int)
+
+        # Interior values
+        p_int = self.phy_setup.eos_P(rho_int, T_int)
+        p_ratio = self.p_0 / p_int
+        p_ratio.clamp_(min=1 + 1e-7)  # Ensure no backflow.
+
+        # Boundary values
+        M_bc = torch.sqrt((2/(self.gamma - 1)) * (p_ratio ** ((self.gamma - 1)/self.gamma) - 1))
+        T_bc = self.T_0 / (1 + (self.gamma - 1)/2 * M_bc ** 2)
+        c_bc = self.phy_setup.eos_c(rho_int, T_bc)
+
+        # Inlet velocity
+        v_n_bc = - M_bc * c_bc
+        v_x, v_y, _ = self._recombine_Vs(v_n_bc, v_t_int)
+
+        rho_bc = self.phy_setup.eos_rho(p_int, T_bc)
+
+        U_face_farfield = torch.stack([v_x, v_y, rho_bc, T_bc], dim=-1)
+        U_face[self.bc_mask] = U_face_farfield
+
+    def BC_farfield(self, U_face, Us_bc_cells, dt):
         """ Compressible farfield:
                 R+ = u + 2a/(gamma - 1)
                 R- = u - 2a/(gamma - 1)
@@ -80,11 +290,10 @@ class FarfieldBC:
         T_int = Us_bc_cells[:, 3]                                     # shape = [n_ff_edge]
 
         # Parallel and tangential velocity
-        V_n = (V * self.farfield_normals).sum(dim=1)      # shape = [n_ff_edge]
-        V_t = V - V_n.unsqueeze(-1) * self.farfield_normals
+        V_t, V_n = self._split_Vs(V)
 
         # Incoming farfield:
-        R_m = self.R_far #self.v_far - 2 * self.a_far / gm1    # Rm = v_far - 2 * a_far/(gamma - 1)
+        R_m = self.R_far #self.v_far - 2 * self.a_far / gm1
 
         # Outgoing (extrapolate from internal) :
         a_int = torch.sqrt(self.gamma * self.R * T_int)
@@ -97,27 +306,22 @@ class FarfieldBC:
         rho_bc = (a_bc_2 / (self.gamma * S_p)) ** (1 / gm1)
         T_bc = a_bc_2 / (self.gamma * self.R)
 
-        V_bc = V_t + V_n_bc.unsqueeze(-1) * self.farfield_normals
+        _, _, V_bc = self._recombine_Vs(V_n_bc, V_t)
 
         U_face_farfield = torch.cat([V_bc, rho_bc.unsqueeze(-1), T_bc.unsqueeze(-1)], dim=-1)
-        U_face[self.farfield_mask] = U_face_farfield
+        U_face[self.bc_mask] = U_face_farfield
 
-    def __farfield_blended(self, U_face, Us_bc_cells, dt=None):
+    def BC_farfield_blended(self, U_face, Us_bc_cells, dt):
         """Set farfield boundary conditions using blended characteristic approach. Good if flow changes direction.
 
         This function implements a smooth, blended farfield boundary condition that
         automatically transitions between inflow and outflow using Riemann invariants
-        and entropy. The blending prevents spurious reflections at the boundary by
-        smoothly interpolating between interior and farfield states based on local
-        flow direction.
+        and entropy.
 
         Theory - Riemann Invariants:
         ----------------------------
-        For inviscid compressible flow, three characteristic quantities are transported
-        along characteristic curves:
         1. Left-running Riemann invariant (characteristic speed: u - a):
            R⁻ = u - 2a/(γ-1)
-           where u is normal velocity, a is speed of sound
         2. Entropy invariant (characteristic speed: u):
            S = p/ρ^γ = RT/ρ^(γ-1)
            constant along streamlines for isentropic flow
@@ -126,22 +330,12 @@ class FarfieldBC:
 
         Blending Strategy:
         ------------------
-        The method smoothly interpolates each invariant based on the sign and magnitude
-        of its characteristic speed λ = u ± a:
-
-        For each invariant i with characteristic speed λᵢ:
+        The method smoothly interpolates each invariant based on the sign and magnitude  of λ = u ± a:
         - If λᵢ >> 0 (strongly outgoing): use interior value (information flows outward)
         - If λᵢ << 0 (strongly incoming): use farfield value (information flows inward)
         - If λᵢ ≈ 0 (near-sonic): blend smoothly between interior and farfield
         Blending function:
             αᵢ = 0.5 * (1 - tanh(λᵢ/c))
-
-        where c is a characteristic speed scale (mean interior sound speed).
-        This gives:
-        - α → 1 when λ << 0 (use farfield value)
-        - α → 0 when λ >> 0 (use interior value)
-        - α ≈ 0.5 when λ ≈ 0 (equal blend)
-
         Blended invariants:
             R⁻_bc = α₁ * R⁻_far + (1-α₁) * R⁻_int
             S_bc  = α₂ * S_far  + (1-α₂) * S_int
@@ -160,9 +354,6 @@ class FarfieldBC:
            ρ_bc = (a²_bc / (γ * S_bc))^(1/(γ-1))
         4. Temperature (from equation of state):
            T_bc = a²_bc / (γ * R)
-        5. Velocity vector (preserve tangential component):
-           V_bc = V_t + u_bc * n
-           where V_t is tangential velocity from interior
 
         Parameters:
         -----------
@@ -179,18 +370,15 @@ class FarfieldBC:
         - The blending scale is O(a), making the transition region sonic-scale
         - Farfield values R⁻_far, R⁺_far, S_far are precomputed from exit conditions
         - This approach is stable for both subsonic and supersonic flows
-        - The method reduces to pure extrapolation for supersonic outflow
-        - The method reduces to pure farfield prescription for supersonic inflow
         """
         gm1 = self.gamma - 1
 
-        V = Us_bc_cells[:, [0, 1]]                                    # shape = [n_ff_edge, 2]
+        # Interior properties
+        V_int = Us_bc_cells[:, [0, 1]]                                    # shape = [n_ff_edge, 2]
         rho_int = Us_bc_cells[:, 2]                                   # shape = [n_ff_edge]
         T_int = Us_bc_cells[:, 3]                                     # shape = [n_ff_edge]
-
         # Parallel and tangential velocity
-        V_n = (V * self.farfield_normals).sum(dim=1)      # shape = [n_ff_edge]
-        V_t = V - V_n.unsqueeze(-1) * self.farfield_normals
+        V_n, V_t = self._split_Vs(V_int)
 
         # Interior invariants:
         a_int = self.phy_setup.eos_c(rho_int, T_int)
@@ -199,238 +387,25 @@ class FarfieldBC:
         R_p_int = V_n + 2 * a_int / gm1                     # 3
 
         # Interpolation values (assuming c = a_int). Transition smoothly on scale O(c)
-        c = a_int.mean()
-        v_hat, a_hat = 0.1*V_n / c, 0.1*a_int / c
-        lambda1 = v_hat - a_hat
-        alpha1 = 0.5 * (1 - torch.tanh(lambda1))
-        lambda2 = v_hat
-        alpha2 = 0.5 * (1 - torch.tanh(lambda2))
-        lambda3 = v_hat + a_hat
-        alpha3 = 0.5 * (1 - torch.tanh(lambda3))
+        gating = self._gating(V_n, a_int)
+        alpha1, alpha2, alpha3 = gating[:, 0], gating[:, 1], gating[:, 2]
 
         # Set boundary invariants
         R_m_bc = alpha1 * self.R_m_far + (1 - alpha1) * R_m_int
         S_bc = alpha2 * self.S_far + (1 - alpha2) * S_int
         R_p_bc = alpha3 * self.R_p_far + (1 - alpha3) * R_p_int
 
-        # Construct boundary values
+        # Reconstruct primatives
         V_n_bc = 1/2 * (R_m_bc + R_p_bc)
         a_bc_2 = (gm1/4 * (R_p_bc - R_m_bc)) ** 2
         rho_bc = (a_bc_2 / (self.gamma * S_bc)) ** (1 / gm1)
         T_bc = a_bc_2 / (self.gamma * self.R)
 
         # Add onto tangential component
-        V_bc = V_t + V_n_bc.unsqueeze(-1) * self.farfield_normals
+        _, _, V_bc = self._recombine_Vs(V_n_bc, V_t)
 
         U_face_farfield = torch.cat([V_bc, rho_bc.unsqueeze(-1), T_bc.unsqueeze(-1)], dim=-1)
-        U_face[self.farfield_idx] = U_face_farfield
-
-    # def __farfield_neuman(self, U_face, Us_bc_cells, dt):
-    #     """Neuman velocity BC """
-    #     V = Us_bc_cells[:, [0, 1]]                                          # shape = [n_ff_edge, 2]
-    #     rho_int = Us_bc_cells[:, 2]                                   # shape = [n_ff_edge]
-    #     T_int = Us_bc_cells[:, 3]                                     # shape = [n_ff_edge]
-    #
-    #     # # a_int = math.sqrt(self.gamma * self.R * T_int)  # shape = [n_ff_edge]
-    #     a_int_2 = self.gamma * self.R * T_int
-    #     a_bc_2 = a_int_2
-    #
-    #     # Boundary entropy: S- = rho_int^(1-gamma) R T_int
-    #     S_m = rho_int ** (1 - self.gamma) * self.R * T_int
-    #     # rho_b = (a^2/gamma * S) ^(1/(gamma-1))
-    #     rho_bc = (a_bc_2 / (self.gamma * S_m)) ** (1/(self.gamma - 1))
-    #     # T_bc = a^2 / (gamma * R)
-    #     T_bc = a_bc_2 / (self.gamma * self.cfg.R)
-    #
-    #     U_face[self.farfield_mask, 2] = rho_bc
-    #     U_face[self.farfield_mask, 3] = T_bc
-    #
-    # def __farfield_isothermal(self, U_face, Us_bc_cells, dt):
-    #     vx_interior = Us_bc_cells[:, 0]
-    #     rho_bc = self.rho_far * torch.exp(vx_interior - self.v_far)
-    #     U_face[self.farfield_mask, 2] = rho_bc
-    #
-    # def __interior(self, U_face, Us_bc_cells, dt):
-    #     vx_interior = Us_bc_cells[:, 0]
-    #     rho_interior = Us_bc_cells[:, 2]
-    #     beta = dt * self.beta
-    #
-    #     U_face[self.farfield_mask] = torch.where((vx_interior < 0),
-    #                          rho_interior * torch.exp(vx_interior),
-    #                          (beta * rho_interior + (1-beta) * self.rho_far),
-    #                          )
-    #
-    # def __decay(self, U_face, Us_bc_cells, dt):
-    #     """" Combine two methods to decay boundary:
-    #             U_charachteristic = f * rho_interior * torch.exp(vx_interior - self.v_far)
-    #
-    #             f estimates the natural farfield value rho* exp(-v_far)
-    #
-    #         Interpolate using moving state f(S):
-    #             S = (1-tau) * S + tau  * dUdt
-    #             U_face = f(S) * U_charachteristic + (1 - f(S)) * U_decay
-    #
-    #     """
-    #     V = Us_bc_cells[:, :2]                                          # shape = [n_ff_edge, 2]
-    #     V_n = (V * self.farfield_normals).sum(dim=1, keepdim=True)      # shape = [n_ff_edge, 1]
-    #     tau = dt * self.tau
-    #
-    #     rho_bc = self.factor * self.rho_far * torch.exp((V_n - self.v_far)/self.c)
-    #
-    #     d_factor = (self.rho_far - rho_bc) + self.decay_beta * (1 - self.factor)
-    #     self.factor = self.factor + tau * d_factor
-    #
-    #     # rho_bc = rho_bc.clamp(min=0.3, max=1.4)
-    #     U_face[self.farfield_mask] =  rho_bc
-    #
-    # def __adaptive(self, U_face, Us_bc_cells, dt):
-    #     """ Compressible farfield:
-    #             R+ = u + 2a/(gamma - 1)
-    #             R- = u - 2a/(gamma - 1)
-    #             S = P / rho^gamma
-    #         On exit, we have:
-    #             R+ = R+_int
-    #             R- = R-_inf
-    #             S = S_int
-    #
-    #         Adapt V_far.
-    #     """
-    #     gm1 = self.gamma - 1
-    #
-    #     V = Us_bc_cells[:, [0, 1]]                                    # shape = [n_ff_edge, 2]
-    #     rho_int = Us_bc_cells[:, 2]                                   # shape = [n_ff_edge]
-    #     T_int = Us_bc_cells[:, 3]                                     # shape = [n_ff_edge]
-    #
-    #     # Parallel and tangential velocity
-    #     V_n = -(V * self.farfield_normals).sum(dim=1)      # shape = [n_ff_edge]
-    #     V_t = V + V_n.unsqueeze(-1) * self.farfield_normals
-    #
-    #     # Incoming farfield:
-    #     R_m = self.R_m + self.dR_m    # Rm = v_far - 2 * a_far/(gamma - 1)
-    #
-    #     # Outgoing (extrapolate from internal) :
-    #     a_int = torch.sqrt(self.gamma * self.R * T_int)
-    #     R_p = V_n + 2 * a_int / gm1       #  R+ = R+_int = V_n + 2 * a_in / (gamma-1)
-    #     # S_p = self.R * T_int * rho_int ** (-gm1)
-    #
-    #     # Boundary values: a_bc = (gamma-1)/4 * (R+ - R-)
-    #     a_bc_2 = (gm1/4 * (R_p - R_m)) ** 2
-    #     V_n_bc = 1/2 * (R_p + R_m)
-    #     T_bc = a_bc_2 / (self.gamma * self.R)
-    #     rho_bc = rho_int * (T_bc / T_int) ** (1/gm1) #(a_bc_2 / (self.gamma * S_p)) ** (1 / gm1)
-    #
-    #     V_bc = V_t - V_n_bc.unsqueeze(-1) * self.farfield_normals
-    #
-    #     U_face_farfield = torch.cat([V_bc, rho_bc.unsqueeze(-1), T_bc.unsqueeze(-1)], dim=-1)
-    #     U_face[self.farfield_mask] = U_face_farfield
-    #
-    #     # Adapt farfield conditions. Decay pressure exponentially and update R-:
-    #     P_bc = rho_bc * self.R * T_bc
-    #     P_new = P_bc + dt / self.tau * (self.P_far - P_bc)
-    #     m = self.gamma / gm1
-    #     B = (gm1 ** 2 / (16 * self.gamma)) ** m * (self.R * T_int) ** (-1/gm1) * rho_int
-    #     R_new = R_p - (P_new / B) ** (0.5/m)
-    #     self.dR_m = R_new - self.R_m - dt / self.tau * self.decay_beta * self.dR_m
-
-    def set_bc_U_face(self, U_face, Us_bc_cells):
-        """ Set U_face.
-            U_face: shape = [n_edges, n_comp], all boundary edges. Set value in place, given by mask.
-            Us_bc_cells: shape = [n_bc_edges, n_comp], cell values at boundary edges.
-        """
-        raise NotImplementedError
-
-
-class InletBC:
-    inlet_mask: torch.Tensor        # shape = [n_edges_bc]
-    inlet_normals: torch.Tensor     # shape = [n_inlet_edges, 2]
-
-    def __init__(self, phy_setup: PhysicalSetup, cfg: ConfigFVM, inlet_mask, inlet_normals):
-        """ Inlet boundary condition.
-            inlet_normals must point inward.
-        """
-        self.phy_setup = phy_setup
-        self.cfg = cfg
-        self.inlet_mask = inlet_mask
-        self.inlet_normals = inlet_normals
-
-        self.R = self.cfg.R
-        self.gamma = self.cfg.gamma
-
-        # Set stagnation condition to be similar to natural parameters.
-        bc_cfg = cfg.inlet_cfg
-        T_nat = torch.tensor(bc_cfg.T_nat)
-        rho_nat = torch.tensor(bc_cfg.rho_nat)
-        V_x_nat = torch.tensor(bc_cfg.V_x_nat)
-
-        c_nat = self.phy_setup.eos_c(rho_nat, T_nat)
-        M_nat = V_x_nat / c_nat
-        p_nat = self.phy_setup.eos_P(rho_nat, T_nat)
-        self.p_0 = p_nat * (1 + (self.gamma - 1)/2 * M_nat ** 2) ** (self.gamma / (self.gamma - 1))
-        self.T_0 = T_nat * (1 + (self.gamma - 1)/2 * M_nat ** 2)
-
-        print(f'Inlet sound speed: c = {math.sqrt(self.gamma * self.R * T_nat):.2g}')
-
-    def set_bc_U_face(self, U_face, Us_bc_cells, dt):
-        """Set inlet boundary conditions using total pressure and total temperature.
-
-        Subsonic inlet boundary conditions based on isentropic
-        flow relations. Given stagnation (total) conditions p_0 and T_0, we compute
-        the boundary state by combining interior flow.
-                -------
-        For isentropic flow, the following relations hold:
-
-        1. Pressure ratio (isentropic relation):
-           p_0/p = (1 + (γ-1)/2 * M²)^(γ/(γ-1))
-        2. Temperature ratio (isentropic relation):
-           T_0/T = 1 + (γ-1)/2 * M²
-        3. Speed of sound:
-           a = √(γ * R * T)
-        4. Mach number definition:
-           M = V/a
-
-        Parameters:
-        U_face : torch.Tensor, shape [n_edges_bc, n_comp]
-            Boundary face values to be modified in place
-        Us_bc_cells : torch.Tensor, shape [n_inlet_edges, n_comp]
-            Interior cell values adjacent to inlet edges [V_x, V_y, ρ, T]
-        dt : float
-            Time step (unused, kept for interface compatibility)
-
-        Notes:
-        - p and T are computed from interior cell values, p=p_int, T=T_int
-        - Backflow prevention: p_ratio is clamped to be ≥ 1 + ε to ensure M_bc ≥ 0
-        - The tangential velocity component is preserved from the interior flow
-        """
-        V_int = Us_bc_cells[:, [0, 1]]  # shape = [n_inlet_edge, 2]
-        rho_int = Us_bc_cells[:, 2]  # shape = [n_inlet_edge]
-        T_int = Us_bc_cells[:, 3]  # shape = [n_inlet_edge]
-
-        # Parallel and tangential velocity
-        V_n_int = (V_int * self.inlet_normals).sum(dim=1)      # shape = [n_ff_edge]
-        V_t_int = (V_int - V_n_int.unsqueeze(-1) * self.inlet_normals).norm(dim=-1)   # shape = [n_inlet_edge, 2]
-
-        # Interior values
-        p_int = self.phy_setup.eos_P(rho_int, T_int)
-        p_ratio = self.p_0 / p_int
-        p_ratio.clamp_(min=1 + 1e-7)  # Ensure no backflow.
-
-        # Boundary values
-        M_bc = torch.sqrt((2/(self.gamma - 1)) * (p_ratio ** ((self.gamma - 1)/self.gamma) - 1))
-        T_bc = self.T_0 / (1 + (self.gamma - 1)/2 * M_bc ** 2)
-        a_bc = self.phy_setup.eos_c(rho_int, T_int) #torch.sqrt(self.gamma * self.R * T_bc)
-
-        # Inlet velocity
-        V_t = V_t_int       # Keep tangential velocity from interior
-        V_n = M_bc * a_bc
-        # Convert to x-y component. Note normals point outward, so reverse sign
-        inlet_normals = self.inlet_normals
-        V_x = V_n * inlet_normals[:, 0] - V_t * inlet_normals[:, 1]
-        V_y = V_n * inlet_normals[:, 1] + V_t * inlet_normals[:, 0]
-
-        rho_bc = p_int / (self.R * T_bc)
-
-        U_face_farfield = torch.stack([V_x, V_y, rho_bc, T_bc], dim=-1)
-        U_face[self.inlet_mask] = U_face_farfield
+        U_face[self.bc_mask] = U_face_farfield
 
 
 class BoundarySetter:
@@ -447,12 +422,12 @@ class BoundarySetter:
 
     # Farfield boundary condition
     use_farfield: bool
-    farfield_calc: FarfieldBC
+    farfield_calc: BC
     exit_cell2edge: torch.Tensor    # shape = (n_cells, 2)  # Exit edge for each cell
 
     # Inlet boundary condition
     use_inlet: bool
-    inlet_calc: InletBC
+    inlet_calc: BC
     inlet_cell2edge: torch.Tensor    # shape = (n_cells, 2)  # Inlet edge for each cell
 
     def __init__(self, E_props: FVMEdgeInfo, phy_setup: PhysicalSetup):
@@ -583,14 +558,15 @@ class BoundarySetter:
 
         return A_bc, b_bc
 
-
     def init_farfield(self, cfg: ConfigFVM, farfield_mask, exit_cell2edge, farfield_normals):
         self.use_farfield = True
-        self.farfield_calc = FarfieldBC(self.phy_setup, cfg, farfield_mask, farfield_normals)
+        self.farfield_calc = BC(self.phy_setup, cfg, cfg.exit_cfg, farfield_mask, farfield_normals)
         self.exit_cell2edge = exit_cell2edge
 
     def init_inlet(self, cfg: ConfigFVM, inlet_mask, inlet_cell2edge, inlet_normals):
         self.use_inlet = True
-        self.inlet_calc = InletBC(self.phy_setup, cfg, inlet_mask, inlet_normals)
+        self.inlet_calc = BC(self.phy_setup, cfg, cfg.inlet_cfg, inlet_mask, inlet_normals)
         self.inlet_cell2edge = inlet_cell2edge
+
+
 

@@ -4,18 +4,19 @@ import os
 import torch
 from cprint import c_print
 
-from time_fvm.fvm_mesh import FVMMesh
 from time_fvm.sparse_utils import plot_interp_cell
 from time_fvm.edge_process import FVMEdgeInfo
-
+from base_cfg import ARTEFACT_DIR
 
 class Saver:
     def __init__(self, E_props: FVMEdgeInfo, save_dir=None):
         if save_dir is None:
             timestamp = datetime.now().strftime("%m-%d_%H-%M-%S")
-            self.save_dir = f'/home/maccyz/Documents/Neural_PDE/artefacts/fvm_saves/{timestamp}'
+            self.save_dir = f'{ARTEFACT_DIR}/fvm_saves/{timestamp}'
         else:
             self.save_dir = save_dir
+
+        c_print(f'Saving results to {self.save_dir}', color="bright_cyan")
         os.makedirs(self.save_dir, exist_ok=True)
 
         # Save mesh properties

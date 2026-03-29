@@ -85,6 +85,14 @@ class PhysicalSetup:
         """ Pressure EOS """
         return self.R * rho * T
 
+    def eos_T(self, rho, P):
+        """ Inverse of eos_P """
+        return P / (self.R * rho)
+
+    def eos_rho(self, P, T):
+        """ Inverse of eos_P """
+        return P / (self.R * T)
+
     def update(self, E_props: FVMEdgeInfo):
         # E_props = self.E_props
         #E_props.T_faces = E_props.T_faces.clamp(min=10, max=2000)

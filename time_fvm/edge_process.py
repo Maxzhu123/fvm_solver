@@ -243,7 +243,7 @@ class FVMEdgeInfo:
         if use_inlet:
             inlet_cell2edge = self.edge_to_tri_bc[inlet_mask]
             # Directed normal for inlet edges. Points outward always
-            inlet_edge_sign = -2 * (self.bc_edge_side[inlet_mask] - 0.5)
+            inlet_edge_sign = 2 * (self.bc_edge_side[inlet_mask] - 0.5)
             inlet_edge_normals = self.normals_hat.squeeze()[self.bc_edge_mask][inlet_mask]
             inlet_edge_normals = inlet_edge_normals * inlet_edge_sign.unsqueeze(-1)
             self.boundary_setter.init_inlet(self.cfg, inlet_mask, inlet_cell2edge, inlet_edge_normals)

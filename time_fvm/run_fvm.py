@@ -34,13 +34,17 @@ def generate_mesh(cfg: ConfigFVM):
     return Xs, tri_idx, all_edgs, bc_edge_mask, edge_tag, bound_edgs
 
 
-def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigNozzle,
-                      vx=5., vy=0., rho=1., T=100.):
-    T_in = cfg.inlet_T
-    rho_in = cfg.inlet_rho
+def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigNozzle):
+    # Initial conditions based on inlet inside engine, outlet outside.
+    inlet_cfg = cfg.inlet_cfg
+    T_in = inlet_cfg.T_inf
+    rho_in = inlet_cfg.rho_inf
+
+    exit_cfg = cfg.exit_cfg
+    T_out = exit_cfg.T_inf
+    rho_out = exit_cfg.rho_inf
+
     # Boundary conditions
-    centroids = mesh.centroids
-    Xs = mesh.vertices
     bc_tags = {}
     for bc_idx, (e_tag, e_vert) in enumerate(zip(edge_tag, bound_edgs, strict=True)):
         if e_tag == "NavierWall":
@@ -48,20 +52,22 @@ def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSe
         elif e_tag == "Side":
             bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
         elif e_tag == "Left":
-            bc_tags[bc_idx] = Edge([E.Neuman, E.Dirich, E.Dirich, E.Dirich], [None, 0, rho_in, T_in], [0, None, None, None])
+            # bc_tags[bc_idx] = Edge([E.Neuman, E.Dirich, E.Dirich, E.Dirich], [None, 0, rho_in, T_in], [0, None, None, None])
+            bc_tags[bc_idx] = Edge([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
         elif e_tag == "Right":
             bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
         else:
             raise ValueError(f'Unknown edge tag {e_tag}')
 
     # Initial conditions
+    centroids = mesh.centroids
     x, y = centroids[:, 0], centroids[:, 1]
-
-    prims_init = torch.zeros_like(x).unsqueeze(1).repeat(1, 4)
+    n_cells = mesh.n_cells
+    prims_init = torch.zeros([n_cells, 1]).repeat(1, 4)
     prims_init[:, 0] = 0
     prims_init[:, 1] = 0
-    prims_init[:, 2] = rho_in * (x < .4) + rho * (x > .4)
-    prims_init[:, 3] = T_in * (x < .4) + T * (x > .4)
+    prims_init[:, 2] = rho_in * (x < .4) + rho_out * (x > .4)
+    prims_init[:, 3] = T_in * (x < .4) + T_out * (x > .4)
 
     V, rho, T = prims_init[:, :2], prims_init[:, 2:3], prims_init[:, 3:]
 
@@ -70,22 +76,19 @@ def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSe
     return bc_tags, Us_init
 
 
-def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigEllipse,
-               vx=5., vy=0., rho=1., T=100.):
+def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigEllipse):
+    # Set initial conditions same as inlet
+    inlet_cfg = cfg.inlet_cfg
+    v_in = inlet_cfg.v_n_inf
+    T_in = inlet_cfg.T_inf
+    rho_in = inlet_cfg.rho_inf
+
     # Boundary conditions
-    centroids = mesh.centroids
-    Xs = mesh.vertices
     bc_tags = {}
     for bc_idx, (e_tag, e_vert) in enumerate(zip(edge_tag, bound_edgs, strict=True)):
         if e_tag == "NavierWall":
             bc_tags[bc_idx] = Edge([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0], tag=e_tag)
         elif e_tag == "Left":
-            X0, X1 = Xs[e_vert]
-            x0, y0 = X0
-            x1, y1 = X1
-            v_in = 0.1 if (0.05 < (y0 + y1) / 2 < 1.45) else 0
-            T = 100  # if (y0+y1)/2 > 0.7 else 250
-            # bc_tags[bc_idx] = Edge([E.Neuman, E.Dirich, E.Dirich, E.Dirich], [None, 0, 1.01, T], [0, None, None, None])
             bc_tags[bc_idx] = Edge([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
         elif e_tag == "Right":
             bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None], tag=e_tag)
@@ -93,13 +96,14 @@ def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: Physical
             raise ValueError(f'Unknown edge tag {e_tag}')
 
     # Initial conditions
-    x, y = centroids[:, 0], centroids[:, 1]
-
-    prims_init = torch.zeros_like(x).unsqueeze(1).repeat(1, 4)
-    prims_init[:, 0] = vx
-    prims_init[:, 1] = vy
-    prims_init[:, 2] = rho
-    prims_init[:, 3] = T
+    # centroids = mesh.centroids
+    # x, y = centroids[:, 0], centroids[:, 1]
+    n_cells = mesh.n_cells
+    prims_init = torch.zeros([n_cells, 1]).repeat(1, 4)
+    prims_init[:, 0] = v_in
+    prims_init[:, 1] = 0
+    prims_init[:, 2] = rho_in
+    prims_init[:, 3] = T_in
 
     V, rho, T = prims_init[:, :2], prims_init[:, 2:3], prims_init[:, 3:]
 
@@ -115,19 +119,8 @@ def main():
 
     new_mesh = True
 
-    cfg = ConfigEllipse()
+    cfg: ConfigFVM = ConfigEllipse()
     phy_setup = PhysicalSetup(cfg)
-
-    # Useful to set some parameters here
-    T_nat = 100
-    rho_nat = 1
-    V_x_nat = cfg.inlet_cfg.V_x_nat
-    cfg.exit_cfg.T_far = T_nat
-    cfg.exit_cfg.rho_far = rho_nat
-    cfg.exit_cfg.v_far = V_x_nat
-    cfg.inlet_cfg.T_nat = T_nat
-    cfg.inlet_cfg.rho_nat = rho_nat
-    cfg.inlet_cfg.V_x_nat = V_x_nat
 
     if new_mesh:
         c_print(f'Generating new mesh...', "green")
@@ -146,9 +139,9 @@ def main():
 
     # Set up initial conditions.
     if cfg.problem_setup == "ellipse":
-        bc_tags, us_init = init_conds_ellipses(mesh, edge_tag, bound_edgs, phy_setup, cfg, vx=V_x_nat, rho=rho_nat, T=T_nat)
+        bc_tags, us_init = init_conds_ellipses(mesh, edge_tag, bound_edgs, phy_setup, cfg)
     elif cfg.problem_setup == "nozzle":
-        bc_tags, us_init = init_conds_nozzle(mesh, edge_tag, bound_edgs, phy_setup, cfg, vx=V_x_nat, rho=rho_nat, T=T_nat)
+        bc_tags, us_init = init_conds_nozzle(mesh, edge_tag, bound_edgs, phy_setup, cfg)
     else:
         raise ValueError(f'Unknown mode {cfg.problem_setup}')
 
