@@ -35,7 +35,7 @@ class ConfigFVM(ABC):
     print_i: int = None   # Iterations between print statements
     end_t: float = None       # Max simulation time.
 
-    # To be overwritten
+    # Physical parameters, to be overwritten
     T_0: float = None        # Reference temperature
     viscosity: float = None     # At reference temp
     visc_bulk: float = None
@@ -43,7 +43,6 @@ class ConfigFVM(ABC):
     S_const: float = None       # Sutherland's constant
     gamma: float = None  # Ratio of specific heats
     C_v: float = None     # Specific heat at constant volume
-    R: float = None         # specific gas constant
 
     # Stability parameters
     v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
@@ -100,35 +99,24 @@ class ConfigEllipse(ConfigFVM):
     max_A: float = 0.5e-3
     lnscale: float = 2
 
+    # Save configuration
+    plot_t: float = 0.5   # Time interval between plots
+    save_t: float = 0.5    # Time interval between saves
+    print_i: int = 500   # Iterations between print statements
+    end_t: float = 20       # Max simulation time.
+
     # Physical parameters
     T_0: float = 100        # Reference temperature
-    viscosity: float = 3e-3     # At reference temp
-    visc_bulk: float = 50e-5
+    viscosity: float = 1e-3     # At reference temp
+    visc_bulk: float = 10e-3
     thermal_cond: float = 1e-6
     S_const: float = 110.4       # Sutherland's constant
     gamma: float = 1.2  # Ratio of specific heats
     C_v: float = 2     # Specific heat at constant volume
 
-    # Stability parameters
-    v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
-    lim_p: int = 4          # Order of limiter (1 for BJ)
-    lim_K: int = 0.1
-
-    # BC parameters
-    exit_cfg: EllipseFarfield = None
-    inlet_cfg: EllipseInlet = None
-
-    # Save configuration
-    plot_t: float = 0.05   # Time interval between plots
-    save_t: float = 0.5    # Time interval between saves
-    print_i: int = 500   # Iterations between print statements
-    end_t: float = 20       # Max simulation time.
-
     def __post_init__(self):
         self.exit_cfg = EllipseFarfield()
         self.inlet_cfg = EllipseInlet()
-
-        self.R = (self.gamma - 1) * self.C_v        # specific gas constant
 
 # ------------------------------- Nozzle-specific configurations -------------------------------
 @dataclass
@@ -174,25 +162,13 @@ class ConfigNozzle(ConfigFVM):
 
     # Physical parameters
     T_0: float = 100        # Reference temperature
-    viscosity: float = 1e-3     # At reference temp
+    viscosity: float = 5e-3     # At reference temp
     visc_bulk: float = 50e-5
     thermal_cond: float = 1e-6
     S_const: float = 110.4       # Sutherland's constant
-
     gamma: float = 1.2  # Ratio of specific heats
     C_v: float = 2     # Specific heat at constant volume
-
-    # Stability parameters
-    v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
-    lim_p: int = 4          # Order of limiter (1 for BJ)
-    lim_K: int = 0.1
-
-    # BC parameters
-    exit_cfg: NozzleFarfield = None
-    inlet_cfg: NozzleInlet = None
-
 
     def __post_init__(self):
         self.exit_cfg = NozzleFarfield()
         self.inlet_cfg = NozzleInlet()
-        self.R = (self.gamma - 1) * self.C_v        # specific gas constant

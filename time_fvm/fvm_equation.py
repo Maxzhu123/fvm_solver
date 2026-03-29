@@ -49,22 +49,39 @@ class PhysicalSetup:
         Q = rho * (self.C_v * T + 0.5 * V.norm(dim=-1, keepdim=True) ** 2)
         return momentum, rho, Q
 
-    def _tau(self,  E_props: FVMEdgeInfo):
+    def _tau(self, E_props: FVMEdgeInfo):
         """ Compute stress tensor:
                 tau = mu * (grad(V) + grad(V).T) + mu_b * div(V) * I
          """
         T = E_props.T_faces       # shape = [n_edges, edges=2, n_comp=1]
-        grad_V_t = E_props.grad_V  # shape = [n_edges, dim=2, n_comp=2,]
-        div_V_edge = E_props.div_V_faces.mean(dim=1)  # shape = [n_edges]
+
+        # Strain and invariants
+        D, I1, I2 = self._strain_values(E_props)        # shape = [n_edges, 2, 2]
+        I1 = I1.view(-1, 1, 1)   # [n_edges, 1, 1]. Trace of D.
 
         # Viscosity = mu * (T/T0)^(3/2) * (T0 + S) / (T + S)
         mu = self.mu * (T /  self.T_0)**1.5 * (self.T_0 + self.S_const) / (T + self.S_const)  # shape = [n_edges, edges=2, n_comp=1]
         # Bulk viscosity: Proportional to T^2
         mu_b = self.mu_b * T ** 2 / self.T_0 ** 2
 
-        eye = mu_b * torch.eye(2, device=self.device).unsqueeze(0)
-        bulk_tau = div_V_edge.view(-1, 1, 1) * eye
-        self.tau = -mu * (grad_V_t + grad_V_t.permute(0, 2, 1)) - bulk_tau  # shape = [n_edges, 2, 2]
+        eye = torch.eye(2, device=self.device)
+        self.tau = -2 * mu * D - mu_b * I1 * eye  # shape = [n_edges, 2, 2]
+
+    def _strain_values(self, E_props: FVMEdgeInfo):
+        """ Compute strain tensor:
+                epsilon = 0.5 * (grad(V) + grad(V).T)
+            Then compute the 2D invariants:
+                I1 = tr(D)  (divergence)
+                I2 = tr(D^2) (Magnitude of deformation)
+         """
+        grad_V_t = E_props.grad_V  # shape = [n_edges, dim=2, n_comp=2]
+        D = 0.5 * (grad_V_t + grad_V_t.permute(0, 2, 1))  # shape = [n_edges, 2, 2]
+
+        # Invariants
+        I1 = D[:, 0, 0] + D[:, 1, 1]  # shape = [n_edges]
+        I2 = (D**2).sum(dim=(-1, -2))       # Since D is symmetric, this is faster.
+
+        return D, I1, I2
 
     def _pressure(self, E_props: FVMEdgeInfo):
         """ Pressure force:

@@ -56,7 +56,7 @@ class BC:
             case BCMode.Isentropic:
                 self.set_bc_U_face = self.BC_isentropic
 
-                self.gamma = self.cfg.gamma
+                self.gamma = phy_setup.gamma
                 # Get stagnation conditions
                 M_inf = self.v_n_inf / a_inf
                 self.p_0 = p_inf * (1 + (self.gamma - 1) / 2 * M_inf ** 2) ** (self.gamma / (self.gamma - 1))
@@ -66,16 +66,16 @@ class BC:
             case BCMode.Farfield:
                 self.set_bc_U_face = self.BC_farfield
 
-                self.R = self.cfg.R
-                self.gamma = self.cfg.gamma
+                self.R = phy_setup.R
+                self.gamma = phy_setup.gamma
                 self.R_far = self.v_n_inf - 2 * a_inf / (self.gamma - 1)
 
             # Farfield blended boundary condition
             case BCMode.FarfieldBlended:
                 self.set_bc_U_face = self.BC_farfield_blended
 
-                self.R = self.cfg.R
-                self.gamma = self.cfg.gamma
+                self.R = phy_setup.R
+                self.gamma = phy_setup.gamma
                 self.R_m_far = self.v_n_inf - 2 * a_inf / (self.gamma - 1)
                 self.R_p_far = self.v_n_inf + 2 * a_inf / (self.gamma - 1)
                 self.S_far = p_inf / (self.rho_inf ** self.gamma)

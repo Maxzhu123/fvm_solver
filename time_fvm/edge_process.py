@@ -128,7 +128,6 @@ class FVMEdgeInfo:
     rho_faces: torch.Tensor  # shape = (n_edges, 2, 1)  Face values
     T_faces: torch.Tensor # shape = (n_edges, 2, 1)  Face values
     grad_T_n: torch.Tensor  # shape = (n_edges)         Face temperature gradient
-    div_V_faces: torch.Tensor  # shape = (n_edges, 2)  Divergence of V_faces
     mom_faces: torch.Tensor     # shape = (n_edges, 2, 2)  Face values
     Q_faces: torch.Tensor       # shape = (n_edges, 2, 1)  Face energy values
     phi: torch.Tensor  # shape = (n_edges, 1)  Face values = V_faces dot normals. After averaging over faces.
@@ -267,17 +266,12 @@ class FVMEdgeInfo:
         grad_F_flat = torch.repeat_interleave(grad_F, 3, dim=0, output_size=3*self.n_cells) # [dvx/dx, dvy/dx, dvx/dy, dvy/dy, dT/dx, dT/dy]
         grad_F_bc = grad_F[self.edge_to_tri_bc]
 
-        # Limited cell divergence
-        div_V = cell_grads[:, 0, 0] + cell_grads[:, 1, 1]        # shape = [n_cells]
-        div_V_bc = div_V[self.edge_to_tri_bc].unsqueeze(-1)     # shape = [n_bc_edges, 1]
-        div_V = torch.repeat_interleave(div_V, 3, output_size=3*self.n_cells).unsqueeze(-1)            # shape = [3*n_cells, 1]
-
         # Prepare projection from cell to edges - (slow step so vectorise over all components)
-        cell_values = torch.cat([Us_face, div_V, grad_F_flat], dim=-1)        # shape = [3*n_cells, n_comp+7]
-        cell_values_bc = torch.cat([U_face_bc, div_V_bc, grad_F_bc], dim=1)      # shape = [n_edges_bc, n_comp+7]
+        cell_values = torch.cat([Us_face, grad_F_flat], dim=-1)        # shape = [3*n_cells, n_comp+6]
+        cell_values_bc = torch.cat([U_face_bc, grad_F_bc], dim=1)      # shape = [n_edges_bc, n_comp+6]
 
         # Project to left and right face values
-        U_face_all = torch.empty((self.n_edges, 2, self.n_comp + 7), device=self.device)    # [momx, momy, rho, Q, div_V, face_grad X 4]
+        U_face_all = torch.empty((self.n_edges, 2, self.n_comp + 6), device=self.device)    # [momx, momy, rho, Q, face_grad X 4]
         U_face_all[self.tri_to_edge, self.tri_edge_signs] = cell_values
         U_face_all[self.bc_locations, self.bc_edge_side] = cell_values_bc
 
@@ -285,23 +279,24 @@ class FVMEdgeInfo:
         self.Vs_faces = U_face_all[:, :, :2]  # shape = [n_edges, edges=2, n_comp=2]
         self.rho_faces = U_face_all[:, :, [2]]  # shape = [n_edges, edges=2, dims=1]
         self.T_faces = U_face_all[:, :, [3]]    # shape = [n_edges, edges=2, dims=1]
-        self.div_V_faces = U_face_all[:, :, 4]  # shape = [n_edges, edges=2]
 
         # Conserved quantities
         self.mom_faces, _, self.Q_faces = self.phy_setup.primatives_to_state(self.Vs_faces, self.rho_faces, self.T_faces)
         self.phi = (self.Vs_faces * self.normals.unsqueeze(1)).sum(dim=-1) # shape = [n_edges, edges=2, ]
 
         # Non-orthogonal correction for face gradient. Assume lstsq gradient is mean of left and right cell.
-        grad_F_lstsq = U_face_all[:, :, 5:11].view(self.n_edges, 2, 2, 3)   # shape = [n_edges, edges=2, {x, y}, {vx, vy, T}]
+        grad_F_lstsq = U_face_all[:, :, 4:10].view(self.n_edges, 2, 2, 3)   # shape = [n_edges, edges=2, {x, y}, {vx, vy, T}]
         grad_F_lstsq = grad_F_lstsq.mean(dim=1)   # shape = [n_edges, {x, y}, {vx, vy, T}]
         dFdn_correct = grad_F_dn - (grad_F_lstsq * self.X_orthog).sum(dim=1)      # shape = [n_edges, 3]
         # Replace normal part of gradient with face gradient
         grad_F_dot_n = (grad_F_lstsq * self.normals_hat).sum(dim=1, keepdim=True)       # shape = [n_edges, 1, 3]
-        grad_F_para = (dFdn_correct.unsqueeze(dim=1) - grad_F_dot_n) * self.normals_hat       # shape = [n_edges, 2, 3]
-        grad_F = grad_F_lstsq + grad_F_para             # shape = [n_edges, 2, 3]
+        grad_F_tan = grad_F_lstsq - grad_F_dot_n * self.normals_hat  # [n_edges, 2, 3]
+        grad_F_norm = dFdn_correct.unsqueeze(dim=1) * self.normals_hat  # [n_edges, 2, 3]
+        grad_F = grad_F_tan + grad_F_norm
         self.grad_V = grad_F[:, :, :2]
         self.grad_T_n = dFdn_correct[:, 2]      # shape = [n_edges]
 
+        # Save for boundary conditions
         self.cell_grads = cell_grads
 
     def _limit_face_vals(self, Us, U_face_bc, cell_grads):
@@ -343,8 +338,6 @@ class FVMEdgeInfo:
         # U_face[self.neumann_mask] = U_face_neum
 
         U_face = self.boundary_setter.set_face_values(Us, self.cell_grads, dt)
-
-
         return  U_face
 
     def _cell_grads(self, Us_cell_face):
@@ -362,7 +355,7 @@ class FVMEdgeInfo:
             Us.shape = (n_cells, N_component)
             Returns: shape = [n_edges, N_component]
 
-            Non-orthogonal correction: n . grad(U)_f = C du + (n - C d) . grad(U)_f
+            Non-orthogonal correction: n . grad(U)_f = C du + (n - C d) . grad(U)_f (Not used in sparse)
             NOTE: Must be called after _cell_grads() to ensure up to date cell_grads
         """
         #
