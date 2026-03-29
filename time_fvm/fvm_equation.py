@@ -20,20 +20,19 @@ class PhysicalSetup:
         self.device = cfg.device
 
         self.T_0 = cfg.T_0
-        self.gamma = cfg.gamma
         self.mu = cfg.viscosity
         self.mu_b = cfg.visc_bulk
         self.S_const = cfg.S_const
         self.C_v = cfg.C_v
+        self.gamma = cfg.gamma
         self.R = self.C_v * (cfg.gamma - 1)
-        self.C_v_inv = 1 / self.C_v
 
     def state_to_primative(self, state: torch.Tensor):
         """ Convert from conserved quantities (momentum, rho, energy) to primitives (velocity, rho, T) """
         momentum, rho, Q = state[:, [0, 1]], state[:,[2]], state[:,[3]]
 
         V = momentum / rho
-        T = self.C_v_inv * (Q / rho - 0.5 * V.norm(dim=1, keepdim=True) ** 2)
+        T = 1 / self.C_v * (Q / rho - 0.5 * V.norm(dim=1, keepdim=True) ** 2)
         primatives = torch.cat([V, rho, T], dim=-1)
 
         return primatives, state
