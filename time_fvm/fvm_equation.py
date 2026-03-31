@@ -10,6 +10,7 @@ from integrators import get_solver
 from config_fvm import ConfigFVM
 from sparse_utils import to_csr
 
+
 class PhysicalSetup:
     """ Set physical properties of fluid. """
     tau: torch.Tensor       # shape = [n_edges, 2, 2]
@@ -32,7 +33,7 @@ class PhysicalSetup:
         momentum, rho, Q = state[:, [0, 1]], state[:,[2]], state[:,[3]]
 
         V = momentum / rho
-        T = 1 / self.C_v * (Q / rho - 0.5 * V.norm(dim=1, keepdim=True) ** 2)
+        T = 1 / self.C_v * (Q / rho - 0.5 * V.square().sum(dim=1, keepdim=True))
         primatives = torch.cat([V, rho, T], dim=-1)
 
         return primatives, state
@@ -232,7 +233,6 @@ class PressureForce(FVMEdgeFunc):
         self.E_props = E_props
         self.phy_setup = phy_setup
 
-
     def edge_fluxes(self, fluxes=None):
         normals = self.E_props.normals             # shape = [n_edges, 2]
         P_face = self.phy_setup.P_face      # shape = [n_edges, edges=2, n_comp=1]
@@ -280,14 +280,10 @@ class KTDiffusion(FVMEdgeFunc):
         a = torch.cat([v_factor * c, v_factor * c, c, c], dim=1)  # shape = [n_edges, n_comp]
         a = a + Vs_max  # shape = [n_edges, n_comp]
 
-        # Maximum diffusion distance is a * dt/2 < tri_height -> a < 2 * tri_height / dt
-        # Assume tri_height = k * edge_len / 2
+        # Flux = a/2 * (U_L - U_R) * edge_len
         edge_len = E_props.edge_len
-        # a = a.clamp(max=self.a_clip * edge_len / dt)  # shape = [n_edges, 1]
         kt_fluxes = (a/2) * (Us[:, 0] - Us[:, 1]) * edge_len  # shape = [n_edges, n_comp]
-
-        # print(f'{M.max() = }')
-        return kt_fluxes #* 0.25
+        return kt_fluxes
 
 
 class FVMEquation:
