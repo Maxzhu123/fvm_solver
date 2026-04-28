@@ -157,7 +157,7 @@ class FVMEdgeInfo:
         (cell_disps, edge_dists_bc, G_mats, neigh_combine, edge_to_tri_comb) = mesh.cell_grad_stuff
         self.edge_dists_bc = edge_dists_bc.to(device).unsqueeze(-1).expand(-1, self.n_comp)
         G_mats = torch.cat([G_mats[0], G_mats[1]], dim=0)
-        self.G_mats = to_csr(G_mats, device) #torch.sparse_csr_tensor(G_mats.crow_indices().to(torch.int32), G_mats.col_indices().to(torch.int32), G_mats.values(), G_mats.size())
+        self.G_mats = to_csr(G_mats, device)
 
         self.neigh_combine = neigh_combine.to(device)
         self.cell_disps = cell_disps.to(device)
@@ -327,16 +327,6 @@ class FVMEdgeInfo:
             return.shape: [n_edges_bc, n_comp]
 
          """
-        # U_face = torch.empty((self.n_edges_bc, self.n_comp), device=self.device)
-        # # Boundary edges
-        # u_centroid_bc = Us[self.edge_to_tri_bc] # shape = [n_bc_edges, n_comp]
-        # # Dirichlet
-        # U_face[self.dirich_mask] = self.dirich_val
-        # # Neumann
-        # U_cent_bc_neum = u_centroid_bc[self.neumann_mask]        # shape = [n_neum_edges]
-        # U_face_neum = U_cent_bc_neum + self.neumann_val * self.edge_dists_bc[self.neumann_mask]
-        # U_face[self.neumann_mask] = U_face_neum
-
         U_face = self.boundary_setter.set_face_values(Us, self.cell_grads, dt)
         return  U_face
 

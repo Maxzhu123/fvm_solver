@@ -12,7 +12,7 @@ class BCMode(Enum):
 
 @dataclass
 class ConfigFVM(ABC):
-    device: str = "cuda"
+    device: str = "cpu"
     compile: bool = True
 
     problem_setup: str = None    # {ellipse, nozzle}
@@ -100,7 +100,7 @@ class ConfigEllipse(ConfigFVM):
     lnscale: float = 2
 
     # Save configuration
-    plot_t: float = 0.5   # Time interval between plots
+    plot_t: float = 0.005   # Time interval between plots
     save_t: float = 0.5    # Time interval between saves
     print_i: int = 500   # Iterations between print statements
     end_t: float = 20       # Max simulation time.

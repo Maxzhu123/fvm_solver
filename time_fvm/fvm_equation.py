@@ -149,7 +149,7 @@ class Adevction(FVMEdgeFunc):
         rho_faces = E_props.rho_faces # shape = [n_edges, edges=2, n_comp=1]
         phi = E_props.phi           # Linear interpolation of convection vector = (v_faces dot normal). shape = [n_edges, edges=2]
         mom_f = E_props.mom_faces
-        Q_faces = E_props.Q_faces # = rho_faces * (1/2  * V_faces.norm(dim=-1, keepdim=True) ** 2 + self.C_v * T_faces)
+        Q_faces = E_props.Q_faces
 
         Q_p_P = Q_faces + self.phy_setup.P_face
         Us_f = torch.cat([mom_f, rho_faces, Q_p_P], dim=-1)  # shape = [n_edges, edges=2, n_comp=3]
@@ -317,8 +317,7 @@ class FVMEquation:
         self.Heat = Heating(E_props, self.phy_setup, cfg=cfg, device=device)
         self.KT_diff = KTDiffusion(cfg.v_factor, self.phy_setup, E_props, device=device)
 
-        # self.t_solver = Adams4PC(self.cells, self, cfg=cfg)
-        self.t_solver = get_solver(self.cells, self, cfg) #ButcherAdapt(self.cells, self, name="RK3_SSP4", cfg=cfg)
+        self.t_solver = get_solver(self.cells, self, cfg)
 
         E_props.clear_temp()
         c_print("Done FVMEquation", color="bright_magenta")

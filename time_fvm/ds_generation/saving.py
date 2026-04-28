@@ -77,7 +77,7 @@ def load_step(file_path):
     return data['t'], torch.from_numpy(cell_primatives).float(), torch.from_numpy(bc_primatives).float()
 
 
-def main(save_dir='/home/maccyz/Documents/Neural_PDE/time_fvm/saves/12-11_20-42-30'):
+def main(save_dir='/home/maccyz/Documents/FVM_solver/artefacts/fvm_saves/03-29_06-20-55'):
     """
     Plot out the saved mesh and time step data.
     """
