@@ -437,7 +437,7 @@ class BoundarySetter:
 
         self.n_comp = E_props.n_comp
         self.n_edges_bc = E_props.n_facets_bc
-        tri_to_edge = E_props.tri_to_facet.view(-1, 3)
+        tri_to_edge = E_props.cell_to_facet.view(-1, 3)
 
         # Flatten out all Neumann BCs and index according to order where_neum_all[0]
         neum_mask_all = torch.zeros_like(E_props.bc_facet_mask)
@@ -450,7 +450,7 @@ class BoundarySetter:
 
         # Mapping from boundary edge to cell
         bc_edge_to_tri = torch.zeros_like(E_props.bc_facet_mask).long()
-        bc_edge_to_tri[E_props.bc_facet_mask] = E_props.facet_to_tri_bc
+        bc_edge_to_tri[E_props.bc_facet_mask] = E_props.facet_to_cell_bc
 
         # Cells corresponding to Neumann BC
         self.neum_cells = bc_edge_to_tri[where_neum_all[0]]  # shape = [n_neum_edges], which cells have neuman BCs
@@ -542,7 +542,7 @@ class BoundarySetter:
         neum_indices = torch.nonzero(neum_mask, as_tuple=False).squeeze(1)  # indices where Neumann is True.
         A_rows = neum_indices
         # bc_rows[neum_indices] gives the corresponding boundary edge for each flattened row.
-        A_cols = E_props.facet_to_tri_bc[bc_rows[neum_indices]] * n_comp + comp_idx[neum_indices]
+        A_cols = E_props.facet_to_cell_bc[bc_rows[neum_indices]] * n_comp + comp_idx[neum_indices]
         A_vals = torch.ones_like(A_rows, dtype=torch.float32, device=device)
 
         size_A = (N, n_cells * n_comp)

@@ -101,10 +101,10 @@ class FVMFacetInfo:
     cell_disps: torch.Tensor        # shape = (n_facets, 2)
 
     # Main mesh
-    facet_to_tri_main: torch.Tensor  # shape = [n_facets_m, 2], ordered so triangle parallel to facet normal comes last, antiparallel first.
+    facet_to_cell_main: torch.Tensor  # shape = [n_facets_m, 2], ordered so cell parallel to facet normal comes last, antiparallel first.
     cell_dist_proj: torch.Tensor     # shape = (n_facets_m)
-    tri_facet_signs: torch.Tensor    # shape = (3 * n_cells)
-    tri_to_facet: torch.Tensor       # shape = (3 * n_cells)
+    cell_facet_signs: torch.Tensor    # shape = (3 * n_cells)
+    cell_to_facet: torch.Tensor       # shape = (3 * n_cells)
     cent_to_facet_disp: torch.Tensor # shape = (n_cells, 3, 2) Displacement vector between centroid to facet, for every facet
 
     # Boundary condition
@@ -113,7 +113,7 @@ class FVMFacetInfo:
     bc_locations: torch.Tensor      # shape = (n_facets_bc) int version of bc_facet_mask
     dirich_mask: torch.Tensor       # shape = (n_facets, n_comp)
     neumann_mask: torch.Tensor      # shape = (n_facets, n_comp)
-    facet_to_tri_bc: torch.Tensor   # shape = (n_facets_bc)
+    facet_to_cell_bc: torch.Tensor   # shape = (n_facets_bc)
     bc_facet_side: torch.Tensor     # shape = (n_facets_bc, 2) Side of the facet for each boundary facet
     boundary_setter: BoundarySetter
 
@@ -146,12 +146,12 @@ class FVMFacetInfo:
         self.n_comp = n_comp
         self.slope_limiter = SlopeLimiter(mesh.areas.to(device), cfg)
 
-        self.facet_to_tri_main = mesh.facet_to_tri_main.to(device)
+        self.facet_to_cell_main = mesh.facet_to_cell_main.to(device)
         self.cent_to_facet_disp = mesh.cent_to_facet_disp.to(device).unsqueeze(-1)
-        self.tri_facet_signs = (-self.mesh.tri_facet_signs + 1 / 2).to(torch.int32).view(3 * self.n_cells).to(device)
-        self.tri_to_facet = mesh.tri_to_facet.view(3 * self.n_cells).to(device)
+        self.cell_facet_signs = (-self.mesh.cell_facet_signs + 1 / 2).to(torch.int32).view(3 * self.n_cells).to(device)
+        self.cell_to_facet = mesh.cell_to_facet.view(3 * self.n_cells).to(device)
 
-        self.facet_to_tri_bc = mesh.facet_to_tri_bc.to(device)
+        self.facet_to_cell_bc = mesh.facet_to_cell_bc.to(device)
         self.bc_facet_mask = mesh.bc_facet_mask.to(device)
 
         (cell_disps, facet_dists_bc, G_mats, neigh_combine, _) = mesh.cell_grad_stuff
@@ -177,7 +177,7 @@ class FVMFacetInfo:
         # Create indexing masks between main and boundary facets
         # Step 1: Create a boolean tensor tracking which face of each facet is assigned.
         face_assigned = torch.zeros((self.n_facets, 2), dtype=torch.bool, device=self.device)
-        face_assigned[self.tri_to_facet, self.tri_facet_signs] = True
+        face_assigned[self.cell_to_facet, self.cell_facet_signs] = True
         # Step 2: For each boundary facet, find which side (face) is not assigned, with the index (0 or 1) of the unset face
         assigned_boundary = face_assigned[self.bc_facet_mask]  # shape: (n_boundary_facet, 2)
         self.bc_facet_side = (~assigned_boundary).float().argmax(dim=1).int()
@@ -189,7 +189,7 @@ class FVMFacetInfo:
         c_print(f'Complete init FVMEdgeInfo', color="magenta")
 
     def clear_temp(self):
-        del self.facet_dists_bc, self.cell_dist_proj, self.facet_to_tri_main, self.dirich_val, self.neumann_val, self.cell_disps
+        del self.facet_dists_bc, self.cell_dist_proj, self.facet_to_cell_main, self.dirich_val, self.neumann_val, self.cell_disps
         del self.dirich_mask, self.neumann_mask , self.bc_facet_mask
 
         torch.cuda.empty_cache()
@@ -233,14 +233,14 @@ class FVMFacetInfo:
 
         self.boundary_setter = BoundarySetter(self, self.phy_setup)
         if use_farfield:
-            exit_cell2facet = self.facet_to_tri_bc[farfield_mask]
+            exit_cell2facet = self.facet_to_cell_bc[farfield_mask]
             # Normal for farfield facets, pointing outward always
             ff_facet_sign = 2 * (self.bc_facet_side[farfield_mask] - 0.5)
             ff_facet_normals = self.normals_hat.squeeze()[self.bc_facet_mask][farfield_mask]
             ff_facet_normals = ff_facet_normals * ff_facet_sign.unsqueeze(-1)
             self.boundary_setter.init_farfield(self.cfg, farfield_mask, exit_cell2facet, ff_facet_normals)
         if use_inlet:
-            inlet_cell2facet = self.facet_to_tri_bc[inlet_mask]
+            inlet_cell2facet = self.facet_to_cell_bc[inlet_mask]
             # Directed normal for inlet facets. Points outward always
             inlet_facet_sign = 2 * (self.bc_facet_side[inlet_mask] - 0.5)
             inlet_facet_normals = self.normals_hat.squeeze()[self.bc_facet_mask][inlet_mask]
@@ -264,7 +264,7 @@ class FVMFacetInfo:
         grad_F_dn = grad_faces_n[:, [0, 1, 3]]   # shape = [n_faces, 3]
         grad_F = cell_grads[:, :, [0, 1, 3]].reshape(self.n_cells, 6)      # shape = [n_cells, {dx, dy} * {vx, vy, T}]
         grad_F_flat = torch.repeat_interleave(grad_F, 3, dim=0, output_size=3*self.n_cells) # [dvx/dx, dvy/dx, dvx/dy, dvy/dy, dT/dx, dT/dy]
-        grad_F_bc = grad_F[self.facet_to_tri_bc]
+        grad_F_bc = grad_F[self.facet_to_cell_bc]
 
         # Prepare projection from cell to facets - (slow step so vectorise over all components)
         cell_values = torch.cat([Us_face, grad_F_flat], dim=-1)        # shape = [3*n_cells, n_comp+6]
@@ -272,7 +272,7 @@ class FVMFacetInfo:
 
         # Project to left and right face values
         U_face_all = torch.empty((self.n_facets, 2, self.n_comp + 6), device=self.device)    # [momx, momy, rho, Q, face_grad X 4]
-        U_face_all[self.tri_to_facet, self.tri_facet_signs] = cell_values
+        U_face_all[self.cell_to_facet, self.cell_facet_signs] = cell_values
         U_face_all[self.bc_locations, self.bc_facet_side] = cell_values_bc
 
         # Decompose components back
@@ -391,7 +391,7 @@ class FVMFacetInfo:
 
         Implementation preserves existing behavior and shapes used elsewhere in the class.
         """
-        n_facets = self.facet_to_tri_main.shape[0]  # number of facets
+        n_facets = self.facet_to_cell_main.shape[0]  # number of facets
         n_cells = self.n_cells
         n_bc = self.n_facets_bc  # number of boundary facets
         n_comp = self.n_comp  # number of components
@@ -401,12 +401,12 @@ class FVMFacetInfo:
         # Create row indices: each face i gives two rows (one per contribution).
         rows = torch.arange(n_facets, device=self.device).repeat_interleave(2)
 
-        # Flatten the cell indices from self.facet_to_tri_main.
-        cols = self.facet_to_tri_main.reshape(-1)
+        # Flatten the cell indices from self.facet_to_cell_main.
+        cols = self.facet_to_cell_main.reshape(-1)
 
         # We want, for each face i, to assign:
-        #   - For the first cell (cols entry from self.facet_to_tri_main[i, 0]): -1/d_i
-        #   - For the second cell (cols entry from self.facet_to_tri_main[i, 1]): +1/d_i
+        #   - For the first cell (cols entry from self.facet_to_cell_main[i, 0]): -1/d_i
+        #   - For the second cell (cols entry from self.facet_to_cell_main[i, 1]): +1/d_i
         #
         # To do this, we first repeat the cell distances for each face:
         cell_dist_rep = self.cell_dist_proj[~self.bc_facet_mask].repeat_interleave(2)  # shape (2*n_facets,)
@@ -443,9 +443,9 @@ class FVMFacetInfo:
         # --- Build the sparse matrix A_grad_bc ---
         # For Dirichlet entries, we want:
         #   coefficient = -1 / facet_dists_bc[facet]  at the column corresponding to
-        #   cell = self.facet_to_tri_bc[facet] and component c.
-        # For boundary facet i and component c, the cell value is at: col = self.facet_to_tri_bc[i] * n_comp + c
-        cols = self.facet_to_tri_bc[dirich_facet_idx] * n_comp + comp_idx[dirich_rows]
+        #   cell = self.facet_to_cell_bc[facet] and component c.
+        # For boundary facet i and component c, the cell value is at: col = self.facet_to_cell_bc[i] * n_comp + c
+        cols = self.facet_to_cell_bc[dirich_facet_idx] * n_comp + comp_idx[dirich_rows]
         # The coefficient for each Dirichlet entry is -1/facet_dists_bc (for the corresponding boundary facet).
         vals = -1.0 / self.facet_dists_bc[dirich_facet_idx, 0]  # shape: (n_dirich_entries,)
         # The size of the lifted matrix is (n_bc*n_comp, n_cells*n_comp)
@@ -483,7 +483,7 @@ class FVMFacetInfo:
         rows_right = []
         cols_right = []
         # Loop over each facet and each component
-        for e, adj_cell in self.mesh.facet_to_tri.items():
+        for e, adj_cell in self.mesh.facet_to_cell.items():
             if adj_cell.numel() == 2:  # Only interior facets have gradient
                 for comp in range(self.n_comp):
                     i = 3 * e + comp

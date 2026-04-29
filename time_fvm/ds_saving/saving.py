@@ -23,7 +23,7 @@ class Saver:
         mesh = E_props.mesh
         # Mesh property: main
         centroids = mesh.centroids.cpu().numpy()  # shape = [n_cells, 2]
-        triangles = mesh.triangles.cpu().numpy()  # shape = [n_cells, 3]
+        triangles = mesh.cells.cpu().numpy()  # shape = [n_cells, 3]
         vertices = mesh.vertices.cpu().numpy()    # shape = [n_vertices, 2]
         edges = mesh.facets.cpu().numpy()          # shape = [n_edges, 2]
         # Mesh property: BC edges

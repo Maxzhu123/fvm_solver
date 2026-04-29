@@ -2,13 +2,12 @@ import torch
 from abc import ABC
 from cprint import c_print
 
-from sparse_utils import plot_points, plot_edges, plot_interp_cell
+from time_fvm.sparse_utils import plot_points, plot_edges, plot_interp_cell, to_csr
 from time_fvm.mesh_utils.fvm_mesh import FVMMesh
 from time_fvm.fvm_stepping.facet_process import FVMFacetInfo
 from time_fvm.time_solvers.t_solvers import FVMCells
 from time_fvm.time_solvers.integrators import get_solver
 from config_fvm import ConfigFVM
-from sparse_utils import to_csr
 
 
 class PhysicalSetup:
@@ -122,8 +121,7 @@ class FVMEdgeFunc(ABC):
 
     #@abstractmethod
     def edge_fluxes(self, fluxes=None):
-        """ Compute flux for each edge
-        """
+        """ Compute flux for each edge """
         pass
 
 
@@ -309,7 +307,7 @@ class FVMEquation:
         self.E_props = E_props
 
         # Matrix for converting edge fluxes to cell divergence
-        self.flux_mat = self.build_flux_mat(mesh.tri_to_facet, -mesh.tri_facet_signs, mesh.n_facets, mesh.areas)  # shape = [n_cells, n_edge]
+        self.flux_mat = self._build_flux_mat(mesh.cell_to_facet, -mesh.cell_facet_signs, mesh.n_facets, mesh.areas)  # shape = [n_cells, n_edge]
 
         self.P_force = PressureForce(E_props, self.phy_setup, device=device)
         self.U_advect = Adevction(E_props, self.phy_setup, cfg=cfg, device=device)
@@ -322,10 +320,8 @@ class FVMEquation:
         E_props.clear_temp()
         c_print("Done FVMEquation", color="bright_magenta")
 
-
     def solve(self):
         self.t_solver.solve()
-
 
     def forward(self, primatives, dt, t):
         """ primatives.shape = (n_cells, n_component) """
@@ -349,7 +345,7 @@ class FVMEquation:
 
         return divergence
 
-    def build_flux_mat(self, tri_to_edge, tri_edge_sign, n_edges, areas, dtype=torch.float32):
+    def _build_flux_mat(self, tri_to_edge, tri_edge_sign, n_edges, areas, dtype=torch.float32):
         """
         Build the incidence matrix T of shape (n_tri, n_edges).
         For each triangle i and local edge j, we set:
@@ -394,7 +390,7 @@ class FVMEquation:
         plot_points(self.mesh.centroids.cpu(), values.T, show_index=show_index, title=title, lims=lims, Xlims=Xlims)
 
     def plot_interp(self, values, title="Cell Values", Xlims=None, resolution=2000):
-        plot_interp_cell(self.mesh.vertices, values.T, self.mesh.triangles, title=title, Xlims=Xlims)
+        plot_interp_cell(self.mesh.vertices, values.T, self.mesh.cells, title=title, Xlims=Xlims)
 
     def pretty_plot(self, primatives, Xlims=None, title=None):
         Vx, Vy, rho, T = primatives[:, 0], primatives[:, 1], primatives[:, 2], primatives[:, 3]
@@ -408,4 +404,4 @@ class FVMEquation:
         plot_vals = torch.stack([P, M_num, self.divergence[:, 3] ], dim=0)
 
         title = [f"Pressure: {title}", f"Mach number: {title}", f'Heating: {title}']
-        plot_interp_cell(self.mesh.vertices, plot_vals, self.mesh.triangles, title=title, Xlims=Xlims)
+        plot_interp_cell(self.mesh.vertices, plot_vals, self.mesh.cells, title=title, Xlims=Xlims)
