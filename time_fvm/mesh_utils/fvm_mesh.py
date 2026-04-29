@@ -5,15 +5,15 @@ import time
 
 def build_sparse_gradient_matrix(combined_neigh, G_mat, dim, n_cells, n_boundaries):
     """
-    Build a sparse gradient matrix for one spatial dimension using both cell neighbors and boundary edges.
+    Build a sparse gradient matrix for one spatial dimension using both cell neighbors and boundary facets.
 
     Args:
         combined_neigh Tensor: For each cell i, a 1D tensor of neighbor cell indices.
         G_mat (Tensor): For each cell i, a 2D tensor of shape [n_dims, num_total_neighbors_i].
-                              The first columns correspond to cell neighbors and the remaining columns to edges.
+                              The first columns correspond to cell neighbors and the remaining columns to facets.
         dim (int): The spatial dimension (0 for x, 1 for y) to build the gradient matrix.
         n_cells (int): Total number of cells.
-        n_boundaries (int): Total number of boundary edges.
+        n_boundaries (int): Total number of boundary facets.
 
     Returns:
         A (torch.sparse.FloatTensor): A sparse matrix of shape [n_cells, n_cells+n_boundaries] that computes
@@ -45,87 +45,87 @@ def build_sparse_gradient_matrix(combined_neigh, G_mat, dim, n_cells, n_boundari
 
 class FVMMesh:
     n_cells: int
-    n_edges: int
-    n_bc_edge: int
+    n_facets: int
+    n_bc_facet: int
     # Local only for saving / plotting
-    edges: torch.Tensor  # shape = (n_edges, 2)
+    facets: torch.Tensor  # shape = (n_facet, 2)
     vertices: torch.Tensor  # shape = (n_vertices, 2)
     triangles: torch.Tensor  # shape = (n_cells, 3)
     # Used for FVM calculations
-    bc_edge_mask: torch.Tensor  # shape = (n_edges)
+    bc_facet_mask: torch.Tensor  # shape = (n_facet)
     areas: torch.Tensor  # shape = (n_cells)
-    normals: torch.Tensor  # shape = (n_edges, 2)
-    lengths: torch.Tensor  # shape = (n_edges)
+    normals: torch.Tensor  # shape = (n_facet, 2)
+    lengths: torch.Tensor  # shape = (n_facet)
     centroids: torch.Tensor  # shape = (n_cells, 2)
-    midpoints: torch.Tensor  # shape = (n_edges, 2)
-    tri_to_edge: torch.Tensor  # shape = (n_cells, 3)
-    tri_edge_signs: torch.Tensor  # shape = (n_cells, 3)
-    edge_to_tri: dict[int, torch.Tensor]  # shape = {n_edges}[2]        # Mapping edge to triangle indices. Ordered [antiparallel, parallel] to edge normal.
+    midpoints: torch.Tensor  # shape = (n_facet, 2)
+    tri_to_facet: torch.Tensor  # shape = (n_cells, 3)
+    tri_facet_signs: torch.Tensor  # shape = (n_cells, 3)
+    facet_to_tri: dict[int, torch.Tensor]  # shape = {n_facet}[2]        # Mapping facet to triangle indices. Ordered [antiparallel, parallel] to facet normal.
 
-    # Only for interior edges
-    normals_main: torch.Tensor  # shape = (n_edge_main, 2)
+    # Only for interior facet
+    normals_main: torch.Tensor  # shape = (n_facete_main, 2)
     cell_grad_stuff: tuple # Stuff needed to calculate gradient on a cell
-    edge_to_tri_main: torch.Tensor # shape = (n_edge_main, 2)              # Mapping edge to triangle indices for non boundary edges
+    facet_to_tri_main: torch.Tensor # shape = (n_facet_main, 2)              # Mapping facet to triangle indices for non boundary facet
 
-    # Only for boundary edges
-    edge_to_tri_bc: torch.Tensor # shape = (n_edge_bc, 1)              # Mapping edge to triangle indices for boundary edges
-    normals_bc: torch.Tensor  # shape = (n_edge_bc, 2)
+    # Only for boundary facets
+    facet_to_tri_bc: torch.Tensor # shape = (n_facet_bc, 1)              # Mapping facet to triangle indices for boundary facet
+    normals_bc: torch.Tensor  # shape = (n_facet_bc, 2)
 
-    def __init__(self, vertices, triangles, edges, bc_edge_mask, device="cuda"):
+    def __init__(self, vertices, cells, facets, bc_facet_mask, device="cuda"):
         self.vertices = vertices
-        self.triangles = triangles
-        self.edges = edges
-        self.bc_edge_mask = bc_edge_mask
+        self.triangles = cells
+        self.facets = facets
+        self.bc_facet_mask = bc_facet_mask
         self.device = device
 
-        self.n_cells = triangles.shape[0]
-        self.n_edges = edges.shape[0]
-        self.n_bc_edge = bc_edge_mask.sum().item()
-        assert edges.shape[0] == bc_edge_mask.shape[0], f'Different number of edges from bc edge mask {edges.shape = }, {bc_edge_mask.shape = }'
+        self.n_cells = cells.shape[0]
+        self.n_facets = facets.shape[0]
+        self.n_bc_facet = bc_facet_mask.sum().item()
+        assert facets.shape[0] == bc_facet_mask.shape[0], f'Different number of facets from bc facet mask {facets.shape = }, {bc_facet_mask.shape = }'
 
         c_print(f'Computing mesh properties', color="bright_magenta")
-        self._compute_edge_props(vertices, triangles, edges)
+        self._compute_facet_props(vertices, cells, facets)
 
-    def _grad_weighting(self, tri_to_edge, edge_to_tri_ord, centroids, midpoints, normals):
+    def _grad_weighting(self, tri_to_facet, facet_to_tri_ord, centroids, midpoints, normals):
         """ Use least squares formula to compute gradient weighting.
             grad(u) = A^-1 * b
             A = sum_i (d_i d_i^T)
             b = sum_i d_i (u_i - u_c)
         """
 
-        bound_edge_idxs = torch.nonzero(self.bc_edge_mask, as_tuple=False).flatten()
-        global_to_local = {int(global_idx): local_idx for local_idx, global_idx in enumerate(bound_edge_idxs)}
-        edge_to_tri_comb = []
-        for e, cell in edge_to_tri_ord.items():
+        bound_facet_idxs = torch.nonzero(self.bc_facet_mask, as_tuple=False).flatten()
+        global_to_local = {int(global_idx): local_idx for local_idx, global_idx in enumerate(bound_facet_idxs)}
+        facet_to_tri_comb = []
+        for e, cell in facet_to_tri_ord.items():
             if len(cell) == 2:
-                edge_to_tri_comb.append(cell)
+                facet_to_tri_comb.append(cell)
             else:
-                bc_edge_id = global_to_local[e] + self.n_cells
-                bc_edge_id = torch.tensor([bc_edge_id, bc_edge_id])
+                bc_facet_id = global_to_local[e] + self.n_cells
+                bc_facet_id = torch.tensor([bc_facet_id, bc_facet_id])
 
-                edge_to_tri_comb.append(bc_edge_id)
-        edge_to_tri_comb = torch.stack(edge_to_tri_comb)
+                facet_to_tri_comb.append(bc_facet_id)
+        facet_to_tri_comb = torch.stack(facet_to_tri_comb)
 
         combined_neigh, neigh_cents, combined_bc = [], [], []
-        for cell_id, edges in enumerate(tri_to_edge):  # Must keep this order. Neighbor id: torch.cat([Us, Us_bc_edge])
+        for cell_id, facets in enumerate(tri_to_facet):  # Must keep this order. Neighbor id: torch.cat([Us, Us_bc_facet])
             # Get neighboring cells
             neighbors, centers, is_bc = [], [], []
-            for e in edges:
+            for e in facets:
                 e = e.item()
-                if len(edge_to_tri_ord[e]) == 2:
-                    """ Interior Edge"""
+                if len(facet_to_tri_ord[e]) == 2:
+                    """ Interior facet"""
                     is_bc.append(False)
-                    tris = edge_to_tri_ord[e]
+                    tris = facet_to_tri_ord[e]
                     neigh_cell = tris[tris != cell_id]
                     centers.append(centroids[neigh_cell])  # [1, 2]
                     neighbors.append(neigh_cell.item())
                 else:
-                    """ Boundary edge """
+                    """ Boundary facet """
                     is_bc.append(True)
                     midpoint = midpoints[e].unsqueeze(0)
                     centers.append(midpoint)
-                    glob_edge_idx = global_to_local[e]
-                    neighbors.append(glob_edge_idx + self.n_cells)
+                    glob_facet_idx = global_to_local[e]
+                    neighbors.append(glob_facet_idx + self.n_cells)
 
             combined_neigh.append(torch.tensor(neighbors))
             neigh_cents.append(torch.cat(centers))  # [3, 2]
@@ -154,80 +154,80 @@ class FVMMesh:
 
         G_mats = []
         for i in range(2):
-            G_mat = build_sparse_gradient_matrix(combined_neigh, A_inv_di_T, i, self.n_cells, self.n_bc_edge)
+            G_mat = build_sparse_gradient_matrix(combined_neigh, A_inv_di_T, i, self.n_cells, self.n_bc_facet)
             G_mats.append(G_mat)
 
-        # Get displacement between cells with edge indexing. In direction of right to left
-        cell_disps, edge_dist_bc = [], []
-        for e, cells in edge_to_tri_ord.items():
+        # Get displacement between cells with facet indexing. In direction of right to left
+        cell_disps, facet_dist_bc = [], []
+        for e, cells in facet_to_tri_ord.items():
             if cells.shape[0] == 1:
-                # BC cell / edge: Distance from centroid to edge.
+                # BC cell / facet: Distance from centroid to facet.
                 n_hat = normals[e] / torch.norm(normals[e], dim=-1, keepdim=True)
                 f = midpoints[e]
                 p = centroids[cells[0]]
                 disp = n_hat * torch.dot(f - p, n_hat)
                 sign = torch.sign(torch.dot(f - p, n_hat))
                 dist = torch.norm(disp) * sign
-                edge_dist_bc.append(dist)
+                facet_dist_bc.append(dist)
             else:
-                # Main cell / edge: Distance between centroids
+                # Main cell / facet: Distance between centroids
                 d = centroids[cells[1]] - centroids[cells[0]]
                 cell_disps.append(d)
         cell_disps = torch.stack(cell_disps)
-        edge_dist_bc = torch.stack(edge_dist_bc)
+        facet_dist_bc = torch.stack(facet_dist_bc)
 
-        return cell_disps, edge_dist_bc, G_mats, combined_neigh, edge_to_tri_comb
+        return cell_disps, facet_dist_bc, G_mats, combined_neigh, facet_to_tri_comb
 
-    def _compute_edge_props(self, vertices, triangles, edges):
-        # Compute edge normals and lengths
-        edge_vertex = vertices[edges]
-        edge_vectors = edge_vertex[:, 1] - edge_vertex[:, 0]        # Ordering is used as edge index from here.
-        normals = torch.stack([edge_vectors[:, 1], -edge_vectors[:, 0]], dim=1)
-        midpoints = torch.mean(edge_vertex, dim=1)      # shape = [n_edges, 2]
-        self.edge_vertex = edge_vertex                  # shape = [n_edges, 2, 2]
-        self.normals = normals                          # shape = [n_edges, 2]
-        self.midpoints = midpoints                      # shape = [n_edges, 2]
+    def _compute_facet_props(self, vertices, triangles, facets):
+        # Compute facet normals and lengths
+        facet_vertex = vertices[facets]
+        facet_vectors = facet_vertex[:, 1] - facet_vertex[:, 0]        # Ordering is used as facet index from here.
+        normals = torch.stack([facet_vectors[:, 1], -facet_vectors[:, 0]], dim=1)
+        midpoints = torch.mean(facet_vertex, dim=1)      # shape = [n_facet, 2]
+        self.facet_vertex = facet_vertex                  # shape = [n_facet, 2, 2]
+        self.normals = normals                          # shape = [n_facet, 2]
+        self.midpoints = midpoints                      # shape = [n_facet, 2]
 
         # Triangle area and centroid
         tri_points = vertices[triangles]
         self.areas = self._tri_area(tri_points)
         self.centroids = torch.mean(tri_points, dim=1)  # shape = [n_cells, 2]
 
-        # Compute mapping of edges to triangles
-        tri_to_edge = self._get_tri_edges(triangles, edges) # shape = [n_cells, 3]
-        self.tri_to_edge = tri_to_edge
-        unique_edges, _ = torch.unique(tri_to_edge, sorted=True, return_inverse=True)
-        _edge_to_tri, tri_edge_idxs = {}, {}
-        for edge in unique_edges:
-            pos = (edge == tri_to_edge).nonzero()
-            _edge_to_tri[edge.item()] = pos[:, 0]
-            tri_edge_idxs[edge.item()] = pos[:, 1]
+        # Compute mapping of facet to triangles
+        tri_to_facet = self._get_tri_facets(triangles, facets) # shape = [n_cells, 3]
+        self.tri_to_facet = tri_to_facet
+        unique_facets, _ = torch.unique(tri_to_facet, sorted=True, return_inverse=True)
+        _facet_to_tri, tri_facet_idxs = {}, {}
+        for facet in unique_facets:
+            pos = (facet == tri_to_facet).nonzero()
+            _facet_to_tri[facet.item()] = pos[:, 0]
+            tri_facet_idxs[facet.item()] = pos[:, 1]
 
-        # Sort triangle in order of edge signed direction. ORDER: [-, +], so cell on right comes first.
-        self.tri_edge_signs, edge_to_tri, cent_to_edge_disp = self._tri_edge_sign(self.centroids, midpoints, tri_to_edge, self.normals, _edge_to_tri, tri_edge_idxs)
-        self.edge_to_tri = edge_to_tri
+        # Sort triangle in order of facet signed direction. ORDER: [-, +], so cell on right comes first.
+        self.tri_facet_signs, facet_to_tri, cent_to_facet_disp = self._tri_facet_sign(self.centroids, midpoints, tri_to_facet, self.normals, _facet_to_tri, tri_facet_idxs)
+        self.facet_to_tri = facet_to_tri
 
-        # Split tensors into edge and main
-        normals_main, edge_to_tri_main = [], []
-        edge_to_tri_bc, normals_bc = [], []
-        for e_idx, e_bc in enumerate(self.bc_edge_mask):
+        # Split tensors into facet and main
+        normals_main, facet_to_tri_main = [], []
+        facet_to_tri_bc, normals_bc = [], []
+        for e_idx, e_bc in enumerate(self.bc_facet_mask):
             if e_bc:
-                # Precompute tensors for boundary edges
-                edge_to_tri_bc.append(edge_to_tri[e_idx])
+                # Precompute tensors for boundary facets
+                facet_to_tri_bc.append(facet_to_tri[e_idx])
                 normals_bc.append(normals[e_idx])
             else:
-                # Precompute tensors for interior edges
+                # Precompute tensors for interior facets
                 normals_main.append(normals[e_idx])
-                edge_to_tri_main.append(edge_to_tri[e_idx])
+                facet_to_tri_main.append(facet_to_tri[e_idx])
 
         self.normals_main = torch.stack(normals_main)
-        self.edge_to_tri_main = torch.stack(edge_to_tri_main)
-        self.cent_to_edge_disp = cent_to_edge_disp
-        self.edge_to_tri_bc = torch.stack(edge_to_tri_bc).squeeze()
+        self.facet_to_tri_main = torch.stack(facet_to_tri_main)
+        self.cent_to_facet_disp = cent_to_facet_disp
+        self.facet_to_tri_bc = torch.stack(facet_to_tri_bc).squeeze()
         self.normals_bc = torch.stack(normals_bc)
 
         # Compute grad weighting
-        self.cell_grad_stuff = self._grad_weighting(tri_to_edge, edge_to_tri, self.centroids, midpoints, normals)
+        self.cell_grad_stuff = self._grad_weighting(tri_to_facet, facet_to_tri, self.centroids, midpoints, normals)
 
     def _tri_area(self, vertices):
         """ vertices.shape = (n_cells, 3, 2) """
@@ -242,16 +242,16 @@ class FVMMesh:
 
         return area
 
-    def _tri_edge_sign(self, centroids, midpoints, tri_to_edge, normals, edge_to_tri, tri_edge_idxs):
-        """ Compute which triangle is on the left and right of each edge.
+    def _tri_facet_sign(self, centroids, midpoints, tri_to_facet, normals, facet_to_tri, tri_facet_idxs):
+        """ Compute which triangle is on the left and right of each facet.
             For ordering, cell on Left comes first, then right
             Signs: 1 if on left, -1 if on right.
         """
         # signs = []
-        # cent_to_edge_disp = []
-        # for tri_idx, (edge, center) in enumerate(zip(tri_to_edge, centroids)):
-        #     midpoint = midpoints[edge]      # shape = [3, 2]
-        #     normal = normals[edge]          # shape = [3, 2]
+        # cent_to_facet_disp = []
+        # for tri_idx, (facet, center) in enumerate(zip(tri_to_facet, centroids)):
+        #     midpoint = midpoints[facet]      # shape = [3, 2]
+        #     normal = normals[facet]          # shape = [3, 2]
         #
         #     p_diff = midpoint - center      # shape = [3, 2]
         #
@@ -264,14 +264,14 @@ class FVMMesh:
         #
         #     # Compute shortest vector from centroid to line.
         #     r = p_diff
-        #     cent_to_edge_disp.append(r)
+        #     cent_to_facet_disp.append(r)
         #
         # signs = torch.stack(signs).long()       # shape = [n_cells, 3]
-        # cent_to_edge_disp = torch.stack(cent_to_edge_disp)  # shape = [n_cells, 3, 2]
+        # cent_to_facet_disp = torch.stack(cent_to_facet_disp)  # shape = [n_cells, 3, 2]
 
-        midpoints_tri = midpoints[tri_to_edge]  # shape: [n_cells, 3, 2]
-        normals_tri = normals[tri_to_edge]  # shape: [n_cells, 3, 2]
-        # Compute the difference between each edge midpoint and the centroid.
+        midpoints_tri = midpoints[tri_to_facet]  # shape: [n_cells, 3, 2]
+        normals_tri = normals[tri_to_facet]  # shape: [n_cells, 3, 2]
+        # Compute the difference between each facet midpoint and the centroid.
         p_diff = midpoints_tri - centroids.unsqueeze(1)  # shape: [n_cells, 3, 2]
         # Normalize the normals along the last dimension.
         norms = torch.norm(normals_tri, dim=-1, keepdim=True)  # shape: [n_cells, 3, 1]
@@ -280,66 +280,65 @@ class FVMMesh:
         dist_dot = torch.sum(norm_hat * p_diff, dim=-1)  # shape: [n_cells, 3]
         signs = torch.sign(dist_dot).long()  # shape: [n_cells, 3]
         # The displacement vectors are simply p_diff.
-        cent_to_edge_disp = p_diff  # shape: [n_cells, 3, 2]
+        cent_to_facet_disp = p_diff  # shape: [n_cells, 3, 2]
 
-        edge_to_tri_ordered = {}
+        facet_to_tri_ordered = {}
         p_m, m_p = torch.tensor([1, -1]), torch.tensor([-1, 1])
-        for edge in sorted(edge_to_tri.keys()):
-            tri_idx = edge_to_tri[edge]
-            tri_edge = tri_edge_idxs[edge]
+        for facet in sorted(facet_to_tri.keys()):
+            tri_idx = facet_to_tri[facet]
+            tri_facet = tri_facet_idxs[facet]
 
-            order = signs[tri_idx, tri_edge]
+            order = signs[tri_idx, tri_facet]
 
-            # Boundary edges only have 1 triangle
+            # Boundary facets only have 1 triangle
             if order.shape[0] == 1:
-                assert self.bc_edge_mask[edge] == True, "Inconsistent boundary bug"
+                assert self.bc_facet_mask[facet] == True, "Inconsistent boundary bug"
             else:
                 if torch.all(order == m_p):
                     tri_idx = torch.flip(tri_idx, dims=[0])
-            edge_to_tri_ordered[edge] = tri_idx
+            facet_to_tri_ordered[facet] = tri_idx
 
-        return signs, edge_to_tri_ordered, cent_to_edge_disp
+        return signs, facet_to_tri_ordered, cent_to_facet_disp
 
-    def _get_tri_edges(self, triangles, edges):
+    def _get_tri_facets(self, triangles, facets):
         """
-            Compute which edges belong to each triangle
+            Compute which facets belong to each triangle
             triangles.shape = (n_cells, 3)
-            edges.shape = (n_edges, 2)
+            facets.shape = (n_facet, 2)
         """
-        # 1) Normalize each edge (sort nodes in ascending order).
+        # 1) Normalize each facet (sort nodes in ascending order).
         # -------------------------------------------------------
-        # edges_sorted will be shape [m, 2] with each row sorted.
-        edges_sorted, _ = edges.sort(dim=1)
+        # facets_sorted will be shape [m, 2] with each row sorted.
+        facets_sorted, _ = facets.sort(dim=1)
 
-        # 2) Build a lookup: (nodeA, nodeB) -> edge_index
+        # 2) Build a lookup: (nodeA, nodeB) -> facet_index
         # -----------------------------------------------
-        edge_dict = {}
-        for idx, e in enumerate(edges_sorted):
+        facet_dict = {}
+        for idx, e in enumerate(facets_sorted):
             # Make a tuple key (nodeA, nodeB)
             key = (e[0].item(), e[1].item())
-            edge_dict[key] = idx
+            facet_dict[key] = idx
 
-        # 3) For each triangle, find the 3 edges
+        # 3) For each triangle, find the 3 facets
         # --------------------------------------
         # We'll create a result tensor of shape [num_triangles, 3],
-        # each row will store the indices of the 3 edges of that triangle.
+        # each row will store the indices of the 3 facets of that triangle.
 
-        tri_to_edge = []
+        tri_to_facet = []
         for tri in triangles:
             # Extract triangle nodes (v0, v1, v2)
             v0 = tri[0].item()
             v1 = tri[1].item()
             v2 = tri[2].item()
 
-            # Sort each pair so we can look it up in the edge_dict
+            # Sort each pair so we can look it up in the facet_dict
             e1 = tuple(sorted((v0, v1)))
             e2 = tuple(sorted((v1, v2)))
             e3 = tuple(sorted((v2, v0)))
 
-            # Get the edge indices
-            edge_indices = [edge_dict[e1], edge_dict[e2], edge_dict[e3]]
-            #edge_indices = sorted(edge_indices)
-            tri_to_edge.append(edge_indices)
+            # Get the facet indices
+            facet_indices = [facet_dict[e1], facet_dict[e2], facet_dict[e3]]
+            tri_to_facet.append(facet_indices)
 
-        tri_to_edge = torch.tensor(tri_to_edge)
-        return tri_to_edge
+        tri_to_facet = torch.tensor(tri_to_facet)
+        return tri_to_facet

@@ -6,7 +6,7 @@ from matplotlib import pyplot as plt
 import time
 
 from typing import TYPE_CHECKING
-from time_fvm.ds_generation.saving import Saver
+from time_fvm.ds_saving.saving import Saver
 if TYPE_CHECKING:
     from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
     from time_fvm.config_fvm import ConfigFVM

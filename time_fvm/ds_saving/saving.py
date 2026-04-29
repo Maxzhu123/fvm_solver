@@ -5,11 +5,11 @@ import torch
 from cprint import c_print
 
 from time_fvm.sparse_utils import plot_interp_cell
-from time_fvm.edge_process import FVMEdgeInfo
+from time_fvm.fvm_stepping.facet_process import FVMFacetInfo
 from base_cfg import ARTEFACT_DIR
 
 class Saver:
-    def __init__(self, E_props: FVMEdgeInfo, save_dir=None):
+    def __init__(self, E_props: FVMFacetInfo, save_dir=None):
         if save_dir is None:
             timestamp = datetime.now().strftime("%m-%d_%H-%M-%S")
             self.save_dir = f'{ARTEFACT_DIR}/fvm_saves/{timestamp}'
@@ -25,9 +25,9 @@ class Saver:
         centroids = mesh.centroids.cpu().numpy()  # shape = [n_cells, 2]
         triangles = mesh.triangles.cpu().numpy()  # shape = [n_cells, 3]
         vertices = mesh.vertices.cpu().numpy()    # shape = [n_vertices, 2]
-        edges = mesh.edges.cpu().numpy()          # shape = [n_edges, 2]
+        edges = mesh.facets.cpu().numpy()          # shape = [n_edges, 2]
         # Mesh property: BC edges
-        bc_edge_mask = mesh.bc_edge_mask.numpy()                # shape = [n_edges]
+        bc_edge_mask = mesh.bc_facet_mask.numpy()                # shape = [n_edges]
         bc_midpoints = mesh.midpoints[bc_edge_mask].numpy()     # shape = [n_bc_edge, 2]
         bc_normals = mesh.normals[bc_edge_mask].numpy()         # shape = [n_bc_edge, 2]
         bc_type_str = E_props.bc_type_str                       # shape = [n_bc_edge]
@@ -37,14 +37,14 @@ class Saver:
         np.savez_compressed(f'{self.save_dir}/mesh_props.npz', **mesh_props)
         c_print(f"Saved mesh properties to '{self.save_dir}/mesh_props.npz'", color="green")
 
-    def save(self, t, E_props: FVMEdgeInfo, primatives):
-        bc_edge_mask = E_props.mesh.bc_edge_mask
+    def save(self, t, E_props: FVMFacetInfo, primatives):
+        bc_edge_mask = E_props.mesh.bc_facet_mask
         # Save centroid values
         primatives = primatives  # shape = [n_cells, comp=4]
         # Save boundary edge values
-        Vs_bc = E_props.Vs_faces[bc_edge_mask].mean(dim=1)  # shape = [n_bc_edge, comp=2]
-        rho_bc = E_props.rho_faces[bc_edge_mask].mean(dim=1)  # shape = [n_bc_edge, comp=1]
-        T_bc = E_props.T_faces[bc_edge_mask].mean(dim=1)  # shape = [n_bc_edge, comp=1]
+        Vs_bc = E_props.Vs_facet[bc_edge_mask].mean(dim=1)  # shape = [n_bc_edge, comp=2]
+        rho_bc = E_props.rho_facet[bc_edge_mask].mean(dim=1)  # shape = [n_bc_edge, comp=1]
+        T_bc = E_props.T_facet[bc_edge_mask].mean(dim=1)  # shape = [n_bc_edge, comp=1]
         bc_vals = torch.cat([Vs_bc, rho_bc, T_bc], dim=1)  # shape = [n_bc_edge, comp=4]
 
         # Save to file.

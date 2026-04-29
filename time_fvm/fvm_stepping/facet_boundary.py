@@ -5,7 +5,7 @@ from time_fvm.config_fvm import ConfigFVM, BCMode, ConfigBC
 from time_fvm.sparse_utils import to_csr
 if TYPE_CHECKING:
     from torch import Tensor
-    from time_fvm.edge_process import FVMEdgeInfo
+    from time_fvm.fvm_stepping.facet_process import FVMFacetInfo
     from time_fvm.fvm_equation import PhysicalSetup
 
 
@@ -430,27 +430,27 @@ class BoundarySetter:
     inlet_calc: BC
     inlet_cell2edge: torch.Tensor    # shape = (n_cells, 2)  # Inlet edge for each cell
 
-    def __init__(self, E_props: FVMEdgeInfo, phy_setup: PhysicalSetup):
+    def __init__(self, E_props: FVMFacetInfo, phy_setup: PhysicalSetup):
         self.phy_setup = phy_setup
 
         self.use_farfield, self.use_inlet = False, False
 
         self.n_comp = E_props.n_comp
-        self.n_edges_bc = E_props.n_edges_bc
-        tri_to_edge = E_props.tri_to_edge.view(-1, 3)
+        self.n_edges_bc = E_props.n_facets_bc
+        tri_to_edge = E_props.tri_to_facet.view(-1, 3)
 
         # Flatten out all Neumann BCs and index according to order where_neum_all[0]
-        neum_mask_all = torch.zeros_like(E_props.bc_edge_mask)
+        neum_mask_all = torch.zeros_like(E_props.bc_facet_mask)
         neum_mask_all = neum_mask_all.unsqueeze(-1).repeat(1, 4)
-        neum_mask_all[E_props.bc_edge_mask] = E_props.neumann_mask
+        neum_mask_all[E_props.bc_facet_mask] = E_props.neumann_mask
         where_neum_all = torch.where(neum_mask_all)
         where_neum = {'edge': where_neum_all[0], 'comp': where_neum_all[1]}  # shape = [n_neum_edges, 2]
         # Mapping from boundary id to boundary edge id
         self.where_neum = torch.where(E_props.neumann_mask)
 
         # Mapping from boundary edge to cell
-        bc_edge_to_tri = torch.zeros_like(E_props.bc_edge_mask).long()
-        bc_edge_to_tri[E_props.bc_edge_mask] = E_props.edge_to_tri_bc
+        bc_edge_to_tri = torch.zeros_like(E_props.bc_facet_mask).long()
+        bc_edge_to_tri[E_props.bc_facet_mask] = E_props.facet_to_tri_bc
 
         # Cells corresponding to Neumann BC
         self.neum_cells = bc_edge_to_tri[where_neum_all[0]]  # shape = [n_neum_edges], which cells have neuman BCs
@@ -465,7 +465,7 @@ class BoundarySetter:
         # Normal vector of edges
         n_hats = E_props.normals_hat.squeeze()[where_neum['edge']]  # shape = [n_neum_edges, 2]
         # Displacement from centroid to edge
-        cent_to_edge = E_props.cent_to_edge_disp[where_neum['cells']].squeeze()  # shape = [n_neum_edge, 3, 2]
+        cent_to_edge = E_props.cent_to_facet_disp[where_neum['cells']].squeeze()  # shape = [n_neum_edge, 3, 2]
         r = cent_to_edge[torch.arange(cent_to_edge.shape[0]), where_neum['tri_edge_id']]  # shape = [n_neum_edge, 2]
         # Normal component of r
         d = n_hats * (r * n_hats).sum(dim=1, keepdim=True)  # shape = [n_neum_edge, 2]
@@ -515,11 +515,11 @@ class BoundarySetter:
         dU = (grads * self.l).sum(dim=1)  # shape = [n_neum_edge]
         U_face[self.where_neum[0], self.where_neum[1]] += dU
 
-    def _build_spm_face_vals(self, E_props: FVMEdgeInfo):
+    def _build_spm_face_vals(self, E_props: FVMFacetInfo):
         """ Compute bc edge values using sparse matrix multiplication. """
 
         device = E_props.device
-        n_bc = E_props.n_edges_bc  # number of boundary edges
+        n_bc = E_props.n_facets_bc  # number of boundary edges
         n_comp = E_props.n_comp
         n_cells = E_props.n_cells
 
@@ -542,7 +542,7 @@ class BoundarySetter:
         neum_indices = torch.nonzero(neum_mask, as_tuple=False).squeeze(1)  # indices where Neumann is True.
         A_rows = neum_indices
         # bc_rows[neum_indices] gives the corresponding boundary edge for each flattened row.
-        A_cols = E_props.edge_to_tri_bc[bc_rows[neum_indices]] * n_comp + comp_idx[neum_indices]
+        A_cols = E_props.facet_to_tri_bc[bc_rows[neum_indices]] * n_comp + comp_idx[neum_indices]
         A_vals = torch.ones_like(A_rows, dtype=torch.float32, device=device)
 
         size_A = (N, n_cells * n_comp)
@@ -554,7 +554,7 @@ class BoundarySetter:
         b_bc[dirich_mask] = E_props.dirich_val
         # For Neumann entries, add the offset computed from the edge distance.
         # Here, we select the proper component value from self.neumann_val using comp_idx.
-        b_bc[neum_mask] = E_props.neumann_val[comp_idx[neum_mask]] * E_props.edge_dists_bc.flatten()[neum_mask]
+        b_bc[neum_mask] = E_props.neumann_val[comp_idx[neum_mask]] * E_props.facet_dists_bc.flatten()[neum_mask]
 
         return A_bc, b_bc
 

@@ -5,7 +5,7 @@ import pickle
 from cprint import c_print
 
 from base_cfg import BASE_DIR
-from time_fvm.ds_generation.downsampling import adaptive_remesh
+from time_fvm.ds_saving.downsampling import adaptive_remesh
 from time_fvm.sparse_utils import plot_interp_cell, plot_interp_vertex
 
 

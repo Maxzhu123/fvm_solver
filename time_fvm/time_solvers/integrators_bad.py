@@ -3,8 +3,8 @@ from collections import deque
 from typing import TYPE_CHECKING
 
 from time_fvm.config_fvm import ConfigFVM
-from time_fvm.t_solvers import TSolver, FVMCells
-from time_fvm.integrators import Adaptive
+from time_fvm.time_solvers.t_solvers import TSolver, FVMCells
+from time_fvm.time_solvers.integrators import Adaptive
 if TYPE_CHECKING:
     from time_fvm import FVMEquation
 

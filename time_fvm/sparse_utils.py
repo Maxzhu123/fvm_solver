@@ -462,7 +462,7 @@ def create_block_diagonal(normals):
     return D
 
 
-def combine_edge_operators(A_main, A_bc, b_bc, bc_edge_mask, n_edges, n_cells, n_comp, device):
+def combine_facet_operators(A_main, A_bc, b_bc, bc_edge_mask, n_edges, n_cells, n_comp, device):
     """
     Combines a main-edge operator and a boundary-edge operator into a single global operator.
 

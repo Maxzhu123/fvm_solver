@@ -4,9 +4,9 @@ import numpy as np
 
 from mesh_gen.meshes_fvm import gen_mesh_nozzle, gen_rand_mesh
 from base_cfg import ARTEFACT_DIR
-from time_fvm.fvm_store import EdgeBCTypes as E
-from time_fvm.fvm_store import Edge
-from time_fvm.fvm_mesh import FVMMesh
+from time_fvm.mesh_utils.mesh_store import FacetBCTypes as E
+from time_fvm.mesh_utils.mesh_store import Facet
+from time_fvm.mesh_utils.fvm_mesh import FVMMesh
 from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
 from time_fvm.config_fvm import ConfigFVM, ConfigNozzle, ConfigEllipse
 
@@ -48,14 +48,14 @@ def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSe
     bc_tags = {}
     for bc_idx, (e_tag, e_vert) in enumerate(zip(edge_tag, bound_edgs, strict=True)):
         if e_tag == "NavierWall":
-            bc_tags[bc_idx] = Edge([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0])
+            bc_tags[bc_idx] = Facet([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0])
         elif e_tag == "Side":
-            bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
+            bc_tags[bc_idx] = Facet([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
         elif e_tag == "Left":
             # bc_tags[bc_idx] = Edge([E.Neuman, E.Dirich, E.Dirich, E.Dirich], [None, 0, rho_in, T_in], [0, None, None, None])
-            bc_tags[bc_idx] = Edge([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
+            bc_tags[bc_idx] = Facet([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
         elif e_tag == "Right":
-            bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
+            bc_tags[bc_idx] = Facet([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None])
         else:
             raise ValueError(f'Unknown edge tag {e_tag}')
 
@@ -87,11 +87,11 @@ def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: Physical
     bc_tags = {}
     for bc_idx, (e_tag, e_vert) in enumerate(zip(edge_tag, bound_edgs, strict=True)):
         if e_tag == "NavierWall":
-            bc_tags[bc_idx] = Edge([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0], tag=e_tag)
+            bc_tags[bc_idx] = Facet([E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, None, None], [None, None, 0, 0], tag=e_tag)
         elif e_tag == "Left":
-            bc_tags[bc_idx] = Edge([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
+            bc_tags[bc_idx] = Facet([E.Inlet, E.Inlet, E.Inlet, E.Inlet], [None, None, None, None], [None, None, None, None], tag=e_tag)
         elif e_tag == "Right":
-            bc_tags[bc_idx] = Edge([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None], tag=e_tag)
+            bc_tags[bc_idx] = Facet([E.Farfield, E.Farfield, E.Farfield, E.Farfield], [None, None, None, None], [None, None, None, None], tag=e_tag)
         else:
             raise ValueError(f'Unknown edge tag {e_tag}')
 

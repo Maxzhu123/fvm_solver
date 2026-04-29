@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 from collections import deque
 import torch
 
-from time_fvm.t_solvers import TSolver, FVMCells
+from time_fvm.time_solvers.t_solvers import TSolver, FVMCells
 if TYPE_CHECKING:
     from time_fvm.fvm_equation import FVMEquation
     from time_fvm.config_fvm import ConfigFVM

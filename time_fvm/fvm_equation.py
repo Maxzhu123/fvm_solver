@@ -3,10 +3,10 @@ from abc import ABC
 from cprint import c_print
 
 from sparse_utils import plot_points, plot_edges, plot_interp_cell
-from fvm_mesh import FVMMesh
-from edge_process import FVMEdgeInfo
-from t_solvers import FVMCells
-from integrators import get_solver
+from time_fvm.mesh_utils.fvm_mesh import FVMMesh
+from time_fvm.fvm_stepping.facet_process import FVMFacetInfo
+from time_fvm.time_solvers.t_solvers import FVMCells
+from time_fvm.time_solvers.integrators import get_solver
 from config_fvm import ConfigFVM
 from sparse_utils import to_csr
 
@@ -49,11 +49,11 @@ class PhysicalSetup:
         Q = rho * (self.C_v * T + 0.5 * V.norm(dim=-1, keepdim=True) ** 2)
         return momentum, rho, Q
 
-    def _tau(self, E_props: FVMEdgeInfo):
+    def _tau(self, E_props: FVMFacetInfo):
         """ Compute stress tensor:
                 tau = mu * (grad(V) + grad(V).T) + mu_b * div(V) * I
          """
-        T = E_props.T_faces       # shape = [n_edges, edges=2, n_comp=1]
+        T = E_props.T_facet       # shape = [n_edges, edges=2, n_comp=1]
 
         # Strain and invariants
         D, I1, I2 = self._strain_values(E_props)        # shape = [n_edges, 2, 2]
@@ -67,7 +67,7 @@ class PhysicalSetup:
         eye = torch.eye(2, device=self.device)
         self.tau = -2 * mu * D - mu_b * I1 * eye  # shape = [n_edges, 2, 2]
 
-    def _strain_values(self, E_props: FVMEdgeInfo):
+    def _strain_values(self, E_props: FVMFacetInfo):
         """ Compute strain tensor:
                 epsilon = 0.5 * (grad(V) + grad(V).T)
             Then compute the 2D invariants:
@@ -83,12 +83,12 @@ class PhysicalSetup:
 
         return D, I1, I2
 
-    def _pressure(self, E_props: FVMEdgeInfo):
+    def _pressure(self, E_props: FVMFacetInfo):
         """ Pressure force:
                 P = rho * C_v * (gamma - 1) * T = R * rho * T
         """
-        rho_faces = E_props.rho_faces               # shape = [n_edges, edges=2, n_comp=1]
-        T_faces = E_props.T_faces                   # shape = [n_edges, edges=2, n_comp=1]
+        rho_faces = E_props.rho_facet               # shape = [n_edges, edges=2, n_comp=1]
+        T_faces = E_props.T_facet                   # shape = [n_edges, edges=2, n_comp=1]
 
         self.P_face = self.eos_P(rho_faces, T_faces)
         self.c = self.eos_c(rho_faces, T_faces)     # shape = [n_edges, edges=2, n_comp=1]
@@ -110,7 +110,7 @@ class PhysicalSetup:
         """ Inverse of eos_P """
         return P / (self.R * T)
 
-    def update(self, E_props: FVMEdgeInfo):
+    def update(self, E_props: FVMFacetInfo):
         # E_props = self.E_props
         #E_props.T_faces = E_props.T_faces.clamp(min=10, max=2000)
         self._tau(E_props)
@@ -131,9 +131,9 @@ class Adevction(FVMEdgeFunc):
     """ out_i = div(rho V V_i) for velocity V, i = {x, y}
         dims: Which dimensions of Us are advected.
     """
-    E_props: FVMEdgeInfo
+    E_props: FVMFacetInfo
 
-    def __init__(self, E_props: FVMEdgeInfo, phy_setup: PhysicalSetup, cfg: ConfigFVM, device="cpu"):
+    def __init__(self, E_props: FVMFacetInfo, phy_setup: PhysicalSetup, cfg: ConfigFVM, device="cpu"):
         self.device = device
         self.E_props = E_props
         self.phy_setup = phy_setup
@@ -146,10 +146,10 @@ class Adevction(FVMEdgeFunc):
             f_E = (Q+p) * phi
         """
         E_props = self.E_props
-        rho_faces = E_props.rho_faces # shape = [n_edges, edges=2, n_comp=1]
+        rho_faces = E_props.rho_facet # shape = [n_edges, edges=2, n_comp=1]
         phi = E_props.phi           # Linear interpolation of convection vector = (v_faces dot normal). shape = [n_edges, edges=2]
-        mom_f = E_props.mom_faces
-        Q_faces = E_props.Q_faces
+        mom_f = E_props.mom_facet
+        Q_faces = E_props.Q_facet
 
         Q_p_P = Q_faces + self.phy_setup.P_face
         Us_f = torch.cat([mom_f, rho_faces, Q_p_P], dim=-1)  # shape = [n_edges, edges=2, n_comp=3]
@@ -167,8 +167,8 @@ class Viscosity(FVMEdgeFunc):
             Shear viscosity: div(mu grad(V)) = sum_f grad(V) * mu_f * l_f
             Bulk viscosity: k * grad(div(V))
     """
-    E_props: FVMEdgeInfo
-    def __init__(self, E_props: FVMEdgeInfo, stress_calc: PhysicalSetup, flux_mat, device="cpu"):
+    E_props: FVMFacetInfo
+    def __init__(self, E_props: FVMFacetInfo, stress_calc: PhysicalSetup, flux_mat, device="cpu"):
         self.device = device
         self.E_props = E_props
         self.stress_calc = stress_calc
@@ -191,8 +191,8 @@ class Heating(FVMEdgeFunc):
     """ Viscous heating term: div(tau V) = sum_f tau_f * V_f * n_f
         Thermal conductivity term:  div(grad(T)) = sum(grad(T) * n_f)
     """
-    E_props: FVMEdgeInfo
-    def __init__(self, E_props: FVMEdgeInfo, stress_calc:PhysicalSetup, cfg: ConfigFVM, device="cpu"):
+    E_props: FVMFacetInfo
+    def __init__(self, E_props: FVMFacetInfo, stress_calc:PhysicalSetup, cfg: ConfigFVM, device="cpu"):
         self.E_props = E_props
         self.stress_calc = stress_calc
 
@@ -202,7 +202,7 @@ class Heating(FVMEdgeFunc):
     def edge_fluxes(self, fluxes=None):
         E_props = self.E_props
         normals = E_props.normals       # shape = [n_edges, 2]
-        V_face = E_props.Vs_faces       # shape = [n_edges, edges=2, n_comp=2]
+        V_face = E_props.Vs_facet       # shape = [n_edges, edges=2, n_comp=2]
 
         tau = self.stress_calc.tau
 
@@ -226,9 +226,9 @@ class Heating(FVMEdgeFunc):
 class PressureForce(FVMEdgeFunc):
     """ Special case. N
         grad(rho) = div(rho I) """
-    E_props: FVMEdgeInfo
+    E_props: FVMFacetInfo
 
-    def __init__(self, E_props: FVMEdgeInfo, phy_setup: PhysicalSetup, device="cpu"):
+    def __init__(self, E_props: FVMFacetInfo, phy_setup: PhysicalSetup, device="cpu"):
         self.device = device
         self.E_props = E_props
         self.phy_setup = phy_setup
@@ -250,9 +250,9 @@ class PressureForce(FVMEdgeFunc):
 
 class KTDiffusion(FVMEdgeFunc):
     """ Diffusion term from K-T solver """
-    E_props: FVMEdgeInfo
+    E_props: FVMFacetInfo
 
-    def __init__(self, v_factor, phy_setup: PhysicalSetup, E_props: FVMEdgeInfo, device="cpu"):
+    def __init__(self, v_factor, phy_setup: PhysicalSetup, E_props: FVMFacetInfo, device="cpu"):
         self.device = device
         self.v_factor = v_factor
         self.E_props = E_props
@@ -261,10 +261,10 @@ class KTDiffusion(FVMEdgeFunc):
 
     def edge_fluxes(self, dt):
         E_props = self.E_props
-        rho_face = E_props.rho_faces
-        Vs_face = E_props.Vs_faces      # shape = [n_edges, edges=2, n_comp=2]
-        Q_face = E_props.Q_faces   # shape = [n_edges, edges=2, n_comp=1]
-        mom_face = E_props.mom_faces
+        rho_face = E_props.rho_facet
+        Vs_face = E_props.Vs_facet      # shape = [n_edges, edges=2, n_comp=2]
+        Q_face = E_props.Q_facet   # shape = [n_edges, edges=2, n_comp=1]
+        mom_face = E_props.mom_facet
 
         Us = torch.cat([mom_face, rho_face, Q_face], dim=2)  # shape = [n_edges, 2, n_comp]
 
@@ -288,7 +288,7 @@ class KTDiffusion(FVMEdgeFunc):
 
 class FVMEquation:
     mesh: FVMMesh
-    E_props: FVMEdgeInfo
+    E_props: FVMFacetInfo
     edges: FVMEdgeFunc
     cells: FVMCells
     n_comp: int
@@ -304,12 +304,12 @@ class FVMEquation:
 
         # Physical parameters
 
-        E_props = FVMEdgeInfo(self.phy_setup, cfg, mesh, n_comp, bc_tag, device=device)
+        E_props = FVMFacetInfo(self.phy_setup, cfg, mesh, n_comp, bc_tag, device=device)
         self.cells = FVMCells(mesh.n_cells, n_comp, init_val=us_init, phys_setup=self.phy_setup, device=device)
         self.E_props = E_props
 
         # Matrix for converting edge fluxes to cell divergence
-        self.flux_mat = self.build_flux_mat(mesh.tri_to_edge, -mesh.tri_edge_signs, mesh.n_edges, mesh.areas)  # shape = [n_cells, n_edge]
+        self.flux_mat = self.build_flux_mat(mesh.tri_to_facet, -mesh.tri_facet_signs, mesh.n_facets, mesh.areas)  # shape = [n_cells, n_edge]
 
         self.P_force = PressureForce(E_props, self.phy_setup, device=device)
         self.U_advect = Adevction(E_props, self.phy_setup, cfg=cfg, device=device)
@@ -388,7 +388,7 @@ class FVMEquation:
         return divergence
 
     def plot_flux(self, fluxes, title="Fluxes", show_index=False, lims=None, Xlims=None):
-        plot_edges(self.mesh.vertices.cpu(), self.mesh.edges.cpu(), title=title, colors=fluxes, show_index=show_index, lims=lims, Xlims=Xlims)
+        plot_edges(self.mesh.vertices.cpu(), self.mesh.facets.cpu(), title=title, colors=fluxes, show_index=show_index, lims=lims, Xlims=Xlims)
 
     def plot_cells(self, values, title="Cell Values", show_index=False, lims=None, Xlims=None):
         plot_points(self.mesh.centroids.cpu(), values.T, show_index=show_index, title=title, lims=lims, Xlims=Xlims)
