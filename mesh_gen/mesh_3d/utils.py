@@ -23,5 +23,5 @@ def plot_slice(mesh: UnstructuredGrid):
 
 
 def plot_clip(grid: UnstructuredGrid):
-    grid = grid.clip(normal="z", origin=(0, 0, 0.24))
+    grid = grid.clip(normal="z", origin=(0, 0, 0.0))
     grid.plot(show_edges=True, show_axes=True)

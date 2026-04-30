@@ -4,7 +4,7 @@ import tetgen
 import os
 import contextlib
 
-L = 2.0
+L = 4
 hole_radius = 0.45
 hole_center = np.array([0.0, 0.0, 0.0])
 
@@ -57,6 +57,14 @@ def geometry():
         phi_resolution=16,
     ).triangulate()
 
+    # sphere = pv.Cylinder(
+    #     center=tuple(hole_center),
+    #     radius=hole_radius,
+    #     height=L*0.8,
+    #     resolution=50,
+    #     capping=True,
+    # ).triangulate()
+
     surface = pv.merge([cube, sphere]).clean()
     return surface
 
@@ -78,10 +86,10 @@ def gen_refined_mesh(surface, bgmesh):
     print("Tet done ")
 
     refine_kwargs = dict(order=1, mindihedral=30, minratio=1.5)
-    with open(os.devnull, "w") as f, contextlib.redirect_stdout(f):
-        tet.tetrahedralize(
-            bgmesh=bgmesh, **refine_kwargs,
-        )
+    # with open(os.devnull, "w") as f, contextlib.redirect_stdout(f):
+    tet.tetrahedralize(
+        bgmesh=bgmesh, **refine_kwargs, verbose=True, switches="q1.2V"
+    )
 
     return tet
 
