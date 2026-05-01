@@ -2,7 +2,7 @@ import torch
 from abc import ABC
 from cprint import c_print
 
-from time_fvm.sparse_utils import plot_points, plot_edges, plot_interp_cell, to_csr
+from time_fvm.sparse_utils import plot_points, plot_edges, plot_interp_cell
 from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D
 from time_fvm.fvm_stepping.facet_process import FacetFlux
 from time_fvm.time_solvers.t_solvers import FVMCells
@@ -29,7 +29,7 @@ class PhysicalSetup:
 
     def state_to_primative(self, state: torch.Tensor):
         """ Convert from conserved quantities (momentum, rho, energy) to primitives (velocity, rho, T) """
-        momentum, rho, Q = state[:, [0, 1]], state[:,[2]], state[:,[3]]
+        momentum, rho, Q = state[:, :2], state[:, 2:3], state[:, 3:4]
 
         V = momentum / rho
         T = 1 / self.C_v * (Q / rho - 0.5 * V.square().sum(dim=1, keepdim=True))
@@ -110,10 +110,9 @@ class PhysicalSetup:
         return P / (self.R * T)
 
     def update(self, E_props: FacetFlux):
-        # E_props = self.E_props
-        #E_props.T_faces = E_props.T_faces.clamp(min=10, max=2000)
         self._tau(E_props)
         self._pressure(E_props)
+
 
 
 class FVMEdgeFunc(ABC):
@@ -201,10 +200,10 @@ class Heating(FVMEdgeFunc):
     def edge_fluxes(self, fluxes=None):
         E_props = self.E_props
         mesh = E_props.mesh
-        normals = mesh.normals       # shape = [n_facets, 2]
+        normals = mesh.normals          # shape = [n_facets, 2]
         V_face = E_props.Vs_facet       # shape = [n_facets, facets=2, n_comp=2]
 
-        tau = self.stress_calc.tau
+        tau = self.stress_calc.tau      # shape = [n_facets, 2, 2]
 
         V_face = V_face.mean(dim=1)     # shape = [n_facets, 2]
         heating = (tau * V_face.unsqueeze(1) * normals.unsqueeze(-1)).sum(dim=(-1, -2))
@@ -249,7 +248,9 @@ class PressureForce(FVMEdgeFunc):
 
 
 class KTDiffusion(FVMEdgeFunc):
-    """ Diffusion term from K-T solver """
+    """ Diffusion term from K-T solver.
+        Flux = a/2 * (U_L - U_R) * edge_len
+     """
     E_props: FacetFlux
 
     def __init__(self, E_props: FacetFlux, v_factor, phy_setup: PhysicalSetup, device="cpu"):
@@ -259,31 +260,41 @@ class KTDiffusion(FVMEdgeFunc):
         self.phy_setup = phy_setup
         self.a_clip = 1
 
-    def edge_fluxes(self, dt):
+    def edge_fluxes(self, fluxes=None):
         E_props = self.E_props
         rho_face = E_props.rho_facet
         Vs_face = E_props.Vs_facet      # shape = [n_edges, edges=2, n_comp=2]
         Q_face = E_props.Q_facet   # shape = [n_edges, edges=2, n_comp=1]
         mom_face = E_props.mom_facet
+        edge_len = E_props.mesh.edge_len
 
-        Us = torch.cat([mom_face, rho_face, Q_face], dim=2)  # shape = [n_edges, 2, n_comp]
+        # Us = torch.cat([mom_face, rho_face, Q_face], dim=2)  # shape = [n_edges, 2, n_comp]
 
         # Wavespeed is c + v_max. Clip velocity wavespeed to k*c + v_max
         Vs = Vs_face.norm(dim=-1)            # shape = [n_edges, edges=2]
         Vs_max = Vs.max(dim=1, keepdim=True).values   # shape = [n_edges, 1]
         c = self.phy_setup.c.max(dim=1).values  # shape = [n_edges, 1]
-        # a = Vs_max + c
 
         # Reduce diffusion for velocity for low Mach number flows
         M = (Vs_max / (c + 1e-8)).abs()
         v_factor = torch.clamp(M, min=self.v_factor, max=1)
-        a = torch.cat([v_factor * c, v_factor * c, c, c], dim=1)  # shape = [n_edges, n_comp]
-        a = a + Vs_max  # shape = [n_edges, n_comp]
+
+        # Use different diffusion for velocity and other components. For velocity, use v_factor * c, for others use c.
+        a_vel = v_factor * c + Vs_max   # shape = [n_edges, n_comp]
+        a_other = c + Vs_max            # shape = [n_edges, n_comp]
 
         # Flux = a/2 * (U_L - U_R) * edge_len
-        edge_len = E_props.mesh.edge_len
-        kt_fluxes = (a/2) * (Us[:, 0] - Us[:, 1]) * edge_len  # shape = [n_facets, n_comp]
-        return kt_fluxes
+        dmom = mom_face[:, 0] - mom_face[:, 1]  # [n_edges, 2]
+        drho = rho_face[:, 0] - rho_face[:, 1]  # [n_edges, 1]
+        dQ = Q_face[:, 0] - Q_face[:, 1]  # [n_edges, 1]
+
+        kt_fluxes = 0.5 * torch.cat([a_vel * dmom, a_other * drho, a_other * dQ], dim=1) * edge_len
+
+        if fluxes is None:
+            return kt_fluxes
+        else:
+            fluxes += kt_fluxes
+
 
 
 class FVMEquation:
@@ -323,10 +334,10 @@ class FVMEquation:
     def solve(self):
         self.t_solver.solve()
 
-    def forward(self, primatives, dt, t):
+    def forward(self, primatives):
         """ primatives.shape = (n_cells, n_component) """
         E_props = self.E_props
-        E_props.compute_facet(primatives, dt)
+        E_props.compute_facet(primatives)
 
         self.phy_setup.update(E_props)
 
@@ -339,7 +350,7 @@ class FVMEquation:
         # Heating term
         self.Heat.edge_fluxes(fluxes)
         # MUSCL term
-        fluxes += self.KT_diff.edge_fluxes(dt)
+        self.KT_diff.edge_fluxes(fluxes)
         # Compute divergence
         divergence = self._flux_to_div(fluxes)
 

@@ -56,7 +56,6 @@ class TSolver(ABC):
         Initialize the time-stepping solver.
         """
         self.device = cfg.device
-        self.dt = cfg.dt
         self.n_steps = cfg.n_iter
         self.cells = cells
         self.eq = eq
@@ -64,6 +63,9 @@ class TSolver(ABC):
         self.plot_t = cfg.plot_t
         self.save_t = cfg.save_t
         self.saver = Saver(self.eq.E_props)
+
+        # Initialise dt from config. Adaptive solvers can overwrite this value in the step function.
+        self.dt = torch.tensor(cfg.dt, device=self.device)
 
         # replace self._solve_step with compiled version if needed
         if cfg.compile:
@@ -76,7 +78,6 @@ class TSolver(ABC):
                 - Plots the solution every plot_t seconds.
                 - Saves the solution every save_t seconds.
         """
-        self.dt = torch.tensor(self.dt, device=self.device)
         next_plot_t = 0 # self.plot_t
         next_save_t = self.save_t
 
@@ -140,7 +141,7 @@ class TSolver(ABC):
     def _solve_profile(self):
         import torch.profiler
 
-        for i in range(5):
+        for i in range(10):
             t = i * self.dt
             self._solve_step(t)
 
@@ -177,11 +178,11 @@ class TSolver(ABC):
         """
         pass
 
-    def _euler_step(self, U, t):
+    def _euler_step(self, U):
         prim_a, _ = self.cells.convert_state_to_value(U)
-        U_i_1 = U + self.dt * self.eq.forward(prim_a, self.dt, t)
+        U_i_1 = U + self.dt * self.eq.forward(prim_a)
         return U_i_1
 
-    def _forward_state(self, U, t):
+    def _forward_state(self, U):
         prim, _ = self.cells.convert_state_to_value(U)
-        return self.eq.forward(prim, self.dt, t)
+        return self.eq.forward(prim)

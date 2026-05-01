@@ -26,6 +26,8 @@ def get_solver(cells: FVMCells, equation: FVMEquation, cfg: ConfigFVM) -> TSolve
         raise NotImplementedError("Invalid solver.")
 
 class Adaptive:
+    dt: torch.Tensor
+
     def _adapt_init(self, order: int, rtol, atol, mtol, alphas, dt_min=None, dt_max=None, device="cuda"):
         self.order = order
         self.rtol = rtol
@@ -48,15 +50,15 @@ class Adaptive:
         diff = dU_high - dU_low
 
         # Compute a new time step size based on the difference
-        # For example, you could use a simple heuristic like:
         E = torch.norm(diff, dim=0) / (self.atol + self.rtol * torch.norm(dU_high, dim=0) + self.mtol * torch.norm(Us, dim=0))
         E = E.mean()
 
         # If E<1, increase the time step size, otherwise decrease step size
-        factor = 0.9 * (1 / E) ** (1 / self.order)
+        factor = 0.9 * E ** (-1 / self.order)
         alpha = torch.where(E > 1, self.alphas[0], self.alphas[1])
 
-        self.dt = self.dt * (alpha  + (1-alpha) * factor)
+        scale_factor = torch.addcmul(alpha, (1-alpha), factor)
+        self.dt.mul_(scale_factor)
 
 
 class Butcher_Tables:
@@ -165,16 +167,16 @@ class RK3_SSP4(TSolver, Adaptive):
 
         U_0 = self.cells.state
         # U_a = 1/2 * U_i + 1/2 * [U_i + dt * f(U_i)]
-        U_a = 1/2 * (U_0 + self._euler_step(U_0, t=t))
+        U_a = 1/2 * (U_0 + self._euler_step(U_0))
 
         # U_b = 1/2 * U_a + 1/2 * [U_a + dt * f(U_a)]
-        U_b = 1/2 * (U_a + self._euler_step(U_a, t=t+self.dt/2))
+        U_b = 1/2 * (U_a + self._euler_step(U_a))
 
         # U_c = 2/3 * U_i + 1/6 * U_b + 1/6 * [U_b + dt * f(U_b)]
-        U_c = 2/3 * U_0 + 1/6 * (U_b + self._euler_step(U_b, t=t+self.dt))
+        U_c = 2/3 * U_0 + 1/6 * (U_b + self._euler_step(U_b))
 
         # U_{i+1} = 1/2 * U_c + 1/2 [U_c + dt * f(U_c)]
-        U_i_1 = 1/2 * (U_c + self._euler_step(U_c, t=t+self.dt/2))
+        U_i_1 = 1/2 * (U_c + self._euler_step(U_c))
 
         self.update_stepsize((U_i_1 - U_0), (U_b - U_0), U_0)
 
@@ -226,7 +228,7 @@ class Adams3PC(TSolver, Adaptive):
         U_a = U_0 + self.dt / 36 * (53 * dUdt_0 - 22 * dUdt_m1 + 6 * dUdt_m2)
 
         # U_{t+1} = U_t + dt/12 * [5 * f(U_a) + 8 * f(U_{t}) - 1 * f(U_{t-1})]
-        dUdt_a = self._forward_state(U_a, t)
+        dUdt_a = self._forward_state(U_a)
         dU_high = self.dt/12 * (5 * dUdt_a + 8 * dUdt_0 - dUdt_m1)
         dU_low = self.dt/2 * (dUdt_a + dUdt_0)
         U_1_high =  U_0 + dU_high
@@ -255,7 +257,7 @@ class Adams4PC(TSolver, Adaptive):
 
     def _init_states(self, t):
         prim, _ = self.cells.get_values()
-        dUdt_0 = self.eq.forward(prim, self.dt, t)
+        dUdt_0 = self.eq.forward(prim)
 
         self.dUdt_m1 = dUdt_0
         self.dUdt_m2 = dUdt_0
@@ -271,7 +273,7 @@ class Adams4PC(TSolver, Adaptive):
 
         prim_t, U_0 = self.cells.get_values()
 
-        dUdt_0 = self.eq.forward(prim_t, self.dt, t)
+        dUdt_0 = self.eq.forward(prim_t)
         dUdt_m1 = self.dUdt_m1
         dUdt_m2 = self.dUdt_m2
 
@@ -333,7 +335,7 @@ class ButcherAdapt(TSolver, Adaptive):
                 # Compute the increment for y using previous stages
                 increment = (self.A[i, :i] * self.k[:i]).sum(dim=0)
             # Evaluate the derivative at the stage time and state
-            k_i =  self.dt * self._forward_state(state_0 + increment, t + self.c[i] * self.dt)
+            k_i =  self.dt * self._forward_state(state_0 + increment)
             self.k[i] = k_i
 
         # Combine stages to compute next state
@@ -384,7 +386,7 @@ class Butcher(TSolver):
                 # Compute the increment for y using previous stages
                 increment = (self.A[i, :i].unsqueeze(-1).unsqueeze(-1) * k[:i]).sum(dim=0)
             # Evaluate the derivative at the stage time and state
-            k_i = self.dt * self._forward_state(state_0 + increment, t + self.c[i] * self.dt)
+            k_i = self.dt * self._forward_state(state_0 + increment)
             k[i] = k_i
 
         # Combine stages to compute next state

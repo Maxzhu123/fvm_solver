@@ -285,11 +285,11 @@ class Heuns(TSolver):
         """
         U_0 = self.cells.state
         # y_star = y_n + dt*f(t_n, y_n)
-        dUdt_star = self._forward_state(U_0, t)
+        dUdt_star = self._forward_state(U_0)
         U_star = U_0 + self.dt * dUdt_star
 
         # y_{n+1} = y_n + 0.5*dt*[f(t_n, y_n) + f(t_n+1, y_star)]
-        dUdt = self._forward_state(U_star, t)
+        dUdt = self._forward_state(U_star)
         U_i_1 = self.cells.state + 0.5 * self.dt * (dUdt_star + dUdt)
 
         # # y_{n+1} = y_n + 0.5*dt*[f(t_n, y_n) + f(t_n+1, y_star)]

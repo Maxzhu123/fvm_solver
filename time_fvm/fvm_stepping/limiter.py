@@ -52,10 +52,16 @@ class SlopeLimiter:
         """ 4th order limiter """
         a = delta.abs()
         b = dU.abs()
+        b2 = 2 * b
         a_eps = a ** 4 + self.eps_p
-        S = 2 * b * (a ** 2 - 2 * b * (a - 2 * b))
-        phi = (a_eps + a * S) / (a_eps + b * (delta ** 3 + S))
-        phi = torch.where(a < 2 * b, phi, 1)
+
+        # S = 2 * b * (a.square() - 2 * b * (a - 2 * b))
+        # phi = (a_eps + a * S) / (a_eps + b * (delta ** 3 + S))
+
+        S = b2 * (torch.addcmul(a.square(), b2, b2 - a))
+        phi = torch.addcmul(a_eps, a, S) / torch.addcmul(a_eps, b, (delta ** 3 + S))
+
+        phi = torch.where(a < b2, phi, 1)
         return phi
 
     def p5(self, delta, dU):

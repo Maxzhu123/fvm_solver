@@ -7,13 +7,12 @@ class BCMode(Enum):
     Isentropic = "Isentropic"
     Characteristic = "characteristic"
     Farfield = "Farfield"
-    FarfieldBlended = "Farfield_Blended"
 
 
 @dataclass
 class ConfigFVM(ABC):
     device: str = "cuda"
-    compile: bool = False
+    compile: bool = True
 
     problem_setup: str = None    # {ellipse, nozzle}
     N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
