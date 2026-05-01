@@ -12,7 +12,7 @@ class BCMode(Enum):
 
 @dataclass
 class ConfigFVM(ABC):
-    device: str = "cpu"
+    device: str = "cuda"
     compile: bool = False
 
     problem_setup: str = None    # {ellipse, nozzle}
@@ -95,20 +95,20 @@ class ConfigEllipse(ConfigFVM):
     n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
-    min_A: float = 0.25e-3
-    max_A: float = 0.5e-3
+    min_A: float = 0.1e-3
+    max_A: float = 0.1e-3
     lnscale: float = 2
 
     # Save configuration
-    plot_t: float = 0.005   # Time interval between plots
+    plot_t: float = 0.025   # Time interval between plots
     save_t: float = 0.5    # Time interval between saves
     print_i: int = 500   # Iterations between print statements
     end_t: float = 20       # Max simulation time.
 
     # Physical parameters
     T_0: float = 100        # Reference temperature
-    viscosity: float = 1e-3     # At reference temp
-    visc_bulk: float = 10e-3
+    viscosity: float = 1e-5     # At reference temp
+    visc_bulk: float = 1e-3
     thermal_cond: float = 1e-6
     S_const: float = 110.4       # Sutherland's constant
     gamma: float = 1.2  # Ratio of specific heats

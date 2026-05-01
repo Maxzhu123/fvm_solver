@@ -5,11 +5,11 @@ import torch
 from cprint import c_print
 
 from time_fvm.sparse_utils import plot_interp_cell
-from time_fvm.fvm_stepping.facet_process import FVMFacetInfo
+from time_fvm.fvm_stepping.facet_process import FacetFlux
 from base_cfg import ARTEFACT_DIR
 
 class Saver:
-    def __init__(self, E_props: FVMFacetInfo, save_dir=None):
+    def __init__(self, E_props: FacetFlux, save_dir=None):
         if save_dir is None:
             timestamp = datetime.now().strftime("%m-%d_%H-%M-%S")
             self.save_dir = f'{ARTEFACT_DIR}/fvm_saves/{timestamp}'
@@ -21,15 +21,17 @@ class Saver:
 
         # Save mesh properties
         mesh = E_props.mesh
+        fvm = mesh.fvm_mesh
         # Mesh property: main
-        centroids = mesh.centroids.cpu().numpy()  # shape = [n_cells, 2]
-        triangles = mesh.cells.cpu().numpy()  # shape = [n_cells, 3]
-        vertices = mesh.vertices.cpu().numpy()    # shape = [n_vertices, 2]
-        edges = mesh.facets.cpu().numpy()          # shape = [n_edges, 2]
+        centroids = fvm.centroids.cpu().numpy()  # shape = [n_cells, 2]
+        triangles = fvm.cells.cpu().numpy()  # shape = [n_cells, 3]
+        vertices = fvm.vertices.cpu().numpy()    # shape = [n_vertices, 2]
+        edges = fvm.facets.cpu().numpy()          # shape = [n_edges, 2]
         # Mesh property: BC edges
-        bc_edge_mask = mesh.bc_facet_mask.numpy()                # shape = [n_edges]
-        bc_midpoints = mesh.midpoints[bc_edge_mask].numpy()     # shape = [n_bc_edge, 2]
-        bc_normals = mesh.normals[bc_edge_mask].numpy()         # shape = [n_bc_edge, 2]
+        bc_edge_mask = mesh.bc_facet_mask.cpu().numpy()                # shape = [n_edges]
+        bc_cpu_mask = fvm.bc_facet_mask                      # CPU boolean mask for indexing CPU tensors
+        bc_midpoints = fvm.midpoints[bc_cpu_mask].numpy()     # shape = [n_bc_edge, 2]
+        bc_normals = fvm.normals[bc_cpu_mask].numpy()         # shape = [n_bc_edge, 2]
         bc_type_str = E_props.bc_type_str                       # shape = [n_bc_edge]
         mesh_props = {"triangles": triangles, "vertices": vertices, "centroids": centroids, "edges": edges,
                       "bc_midpoints": bc_midpoints, "bc_normals": bc_normals,
@@ -37,14 +39,14 @@ class Saver:
         np.savez_compressed(f'{self.save_dir}/mesh_props.npz', **mesh_props)
         c_print(f"Saved mesh properties to '{self.save_dir}/mesh_props.npz'", color="green")
 
-    def save(self, t, E_props: FVMFacetInfo, primatives):
-        bc_edge_mask = E_props.mesh.bc_facet_mask
+    def save(self, t, E_props: FacetFlux, primatives):
+        bc_facet_mask = E_props.mesh.fvm_mesh.bc_facet_mask
         # Save centroid values
         primatives = primatives  # shape = [n_cells, comp=4]
         # Save boundary edge values
-        Vs_bc = E_props.Vs_facet[bc_edge_mask].mean(dim=1)  # shape = [n_bc_edge, comp=2]
-        rho_bc = E_props.rho_facet[bc_edge_mask].mean(dim=1)  # shape = [n_bc_edge, comp=1]
-        T_bc = E_props.T_facet[bc_edge_mask].mean(dim=1)  # shape = [n_bc_edge, comp=1]
+        Vs_bc = E_props.Vs_facet[bc_facet_mask].mean(dim=1)  # shape = [n_bc_edge, comp=2]
+        rho_bc = E_props.rho_facet[bc_facet_mask].mean(dim=1)  # shape = [n_bc_edge, comp=1]
+        T_bc = E_props.T_facet[bc_facet_mask].mean(dim=1)  # shape = [n_bc_edge, comp=1]
         bc_vals = torch.cat([Vs_bc, rho_bc, T_bc], dim=1)  # shape = [n_bc_edge, comp=4]
 
         # Save to file.
@@ -87,6 +89,8 @@ def main(save_dir='/home/maccyz/Documents/FVM_solver/artefacts/fvm_saves/03-29_0
     mesh_props_path = os.path.join(save_dir, 'mesh_props.npz')
     mesh_props = np.load(mesh_props_path)
     mesh_props = dict(mesh_props)
+    mesh_props.pop("bc_type_str", None)
+    # print(mesh_props)
     mesh_props = {k: torch.from_numpy(v) for k, v in mesh_props.items()}
     print(f'{mesh_props.keys() = }')
 
@@ -108,6 +112,7 @@ def main(save_dir='/home/maccyz/Documents/FVM_solver/artefacts/fvm_saves/03-29_0
 
         print(f"Time: {t:.4g}")
         plot_interp_cell(mesh_props['vertices'], cell_primatives.T[:2], mesh_props['triangles'], title=f't={t:.3g}')
+
 
 if __name__ == '__main__':
     main()

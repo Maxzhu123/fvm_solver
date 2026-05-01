@@ -2,11 +2,11 @@ from cprint import c_print
 import torch
 import numpy as np
 
-from mesh_gen.meshes_fvm import gen_mesh_nozzle, gen_rand_mesh
+from mesh_gen.mesh_2d.meshes_fvm import gen_mesh_nozzle, gen_rand_mesh
 from base_cfg import ARTEFACT_DIR
 from time_fvm.mesh_utils.mesh_store import FacetBCTypes as E
 from time_fvm.mesh_utils.mesh_store import Facet
-from time_fvm.mesh_utils.fvm_mesh import FVMMesh
+from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D
 from time_fvm.fvm_equation import FVMEquation, PhysicalSetup
 from time_fvm.config_fvm import ConfigFVM, ConfigNozzle, ConfigEllipse
 
@@ -34,7 +34,7 @@ def generate_mesh(cfg: ConfigFVM):
     return Xs, tri_idx, all_edgs, bc_edge_mask, edge_tag, bound_edgs
 
 
-def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigNozzle):
+def init_conds_nozzle(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigNozzle):
     # Initial conditions based on inlet inside engine, outlet outside.
     inlet_cfg = cfg.inlet_cfg
     T_in = inlet_cfg.T_inf
@@ -76,7 +76,7 @@ def init_conds_nozzle(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSe
     return bc_tags, Us_init
 
 
-def init_conds_ellipses(mesh: FVMMesh, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigEllipse):
+def init_conds_ellipses(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: PhysicalSetup, cfg: ConfigEllipse):
     # Set initial conditions same as inlet
     inlet_cfg = cfg.inlet_cfg
     v_in = inlet_cfg.v_n_inf
@@ -117,7 +117,7 @@ def main():
     np.random.seed(1)
     torch.manual_seed(1)
 
-    new_mesh = True
+    new_mesh = False
 
     cfg: ConfigFVM = ConfigEllipse()
     phy_setup = PhysicalSetup(cfg)
@@ -126,12 +126,12 @@ def main():
         c_print(f'Generating new mesh...', "green")
         prob_definition = generate_mesh(cfg)
         Xs, tri_idx, all_edgs, bc_edge_mask, edge_tag, bound_edgs = prob_definition
-        mesh = FVMMesh(Xs, tri_idx, all_edgs, bc_edge_mask, device=cfg.device)
+        mesh = FVMMesh2D(Xs, tri_idx, all_edgs, bc_edge_mask, device=cfg.device)
         pickle.dump({'mesh': mesh, "edge_tag": edge_tag, "bound_edgs": bound_edgs}, open(f"{ARTEFACT_DIR}/fvm_mesh.pkl", "wb"))
     else:
         c_print(f'Loading mesh', "green")
         save_dict = pickle.load(open(f"{ARTEFACT_DIR}/fvm_mesh.pkl", "rb"))
-        mesh: FVMMesh = save_dict['mesh']
+        mesh: FVMMesh2D = save_dict['mesh']
         edge_tag = save_dict['edge_tag']
         bound_edgs = save_dict['bound_edgs']
 

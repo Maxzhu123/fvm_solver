@@ -3,8 +3,8 @@ from abc import ABC
 from cprint import c_print
 
 from time_fvm.sparse_utils import plot_points, plot_edges, plot_interp_cell, to_csr
-from time_fvm.mesh_utils.fvm_mesh import FVMMesh
-from time_fvm.fvm_stepping.facet_process import FVMFacetInfo
+from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D
+from time_fvm.fvm_stepping.facet_process import FacetFlux
 from time_fvm.time_solvers.t_solvers import FVMCells
 from time_fvm.time_solvers.integrators import get_solver
 from config_fvm import ConfigFVM
@@ -48,7 +48,7 @@ class PhysicalSetup:
         Q = rho * (self.C_v * T + 0.5 * V.norm(dim=-1, keepdim=True) ** 2)
         return momentum, rho, Q
 
-    def _tau(self, E_props: FVMFacetInfo):
+    def _tau(self, E_props: FacetFlux):
         """ Compute stress tensor:
                 tau = mu * (grad(V) + grad(V).T) + mu_b * div(V) * I
          """
@@ -66,7 +66,7 @@ class PhysicalSetup:
         eye = torch.eye(2, device=self.device)
         self.tau = -2 * mu * D - mu_b * I1 * eye  # shape = [n_edges, 2, 2]
 
-    def _strain_values(self, E_props: FVMFacetInfo):
+    def _strain_values(self, E_props: FacetFlux):
         """ Compute strain tensor:
                 epsilon = 0.5 * (grad(V) + grad(V).T)
             Then compute the 2D invariants:
@@ -82,7 +82,7 @@ class PhysicalSetup:
 
         return D, I1, I2
 
-    def _pressure(self, E_props: FVMFacetInfo):
+    def _pressure(self, E_props: FacetFlux):
         """ Pressure force:
                 P = rho * C_v * (gamma - 1) * T = R * rho * T
         """
@@ -109,7 +109,7 @@ class PhysicalSetup:
         """ Inverse of eos_P """
         return P / (self.R * T)
 
-    def update(self, E_props: FVMFacetInfo):
+    def update(self, E_props: FacetFlux):
         # E_props = self.E_props
         #E_props.T_faces = E_props.T_faces.clamp(min=10, max=2000)
         self._tau(E_props)
@@ -129,9 +129,9 @@ class Adevction(FVMEdgeFunc):
     """ out_i = div(rho V V_i) for velocity V, i = {x, y}
         dims: Which dimensions of Us are advected.
     """
-    E_props: FVMFacetInfo
+    E_props: FacetFlux
 
-    def __init__(self, E_props: FVMFacetInfo, phy_setup: PhysicalSetup, cfg: ConfigFVM, device="cpu"):
+    def __init__(self, E_props: FacetFlux, phy_setup: PhysicalSetup, device="cpu"):
         self.device = device
         self.E_props = E_props
         self.phy_setup = phy_setup
@@ -165,20 +165,21 @@ class Viscosity(FVMEdgeFunc):
             Shear viscosity: div(mu grad(V)) = sum_f grad(V) * mu_f * l_f
             Bulk viscosity: k * grad(div(V))
     """
-    E_props: FVMFacetInfo
-    def __init__(self, E_props: FVMFacetInfo, stress_calc: PhysicalSetup, flux_mat, device="cpu"):
+    E_props: FacetFlux
+    def __init__(self, E_props: FacetFlux, stress_calc: PhysicalSetup, device="cpu"):
         self.device = device
         self.E_props = E_props
+        self.mesh = E_props.mesh
         self.stress_calc = stress_calc
 
     def edge_fluxes(self, fluxes=None):
         E_props = self.E_props
 
         tau = self.stress_calc.tau
-        F = (tau * E_props.normals.unsqueeze(-1)).sum(dim=-2)  # shape = [n_edges, 2]
+        F = (tau * self.mesh.normals.unsqueeze(-1)).sum(dim=-2)  # shape = [n_facets, 2]
 
         if fluxes is None:
-            fluxes = torch.zeros(self.E_props.n_edges, self.E_props.n_comp, device=self.device)
+            fluxes = torch.zeros(E_props.n_facets, E_props.n_comp, device=self.device)
             fluxes[:, :2] = F
             return fluxes
         else:
@@ -189,8 +190,8 @@ class Heating(FVMEdgeFunc):
     """ Viscous heating term: div(tau V) = sum_f tau_f * V_f * n_f
         Thermal conductivity term:  div(grad(T)) = sum(grad(T) * n_f)
     """
-    E_props: FVMFacetInfo
-    def __init__(self, E_props: FVMFacetInfo, stress_calc:PhysicalSetup, cfg: ConfigFVM, device="cpu"):
+    E_props: FacetFlux
+    def __init__(self, E_props: FacetFlux, stress_calc:PhysicalSetup, cfg: ConfigFVM, device="cpu"):
         self.E_props = E_props
         self.stress_calc = stress_calc
 
@@ -199,22 +200,23 @@ class Heating(FVMEdgeFunc):
 
     def edge_fluxes(self, fluxes=None):
         E_props = self.E_props
-        normals = E_props.normals       # shape = [n_edges, 2]
-        V_face = E_props.Vs_facet       # shape = [n_edges, edges=2, n_comp=2]
+        mesh = E_props.mesh
+        normals = mesh.normals       # shape = [n_facets, 2]
+        V_face = E_props.Vs_facet       # shape = [n_facets, facets=2, n_comp=2]
 
         tau = self.stress_calc.tau
 
-        V_face = V_face.mean(dim=1)     # shape = [n_edges, 2]
+        V_face = V_face.mean(dim=1)     # shape = [n_facets, 2]
         heating = (tau * V_face.unsqueeze(1) * normals.unsqueeze(-1)).sum(dim=(-1, -2))
 
         """ Thermal conductivity:
                 div(grad(T)) = sum(grad(T) * n_f)
         """
-        grad_T_n = E_props.grad_T_n     # shape = [n_edges]
-        heating -= self.kappa * grad_T_n * E_props.edge_len.squeeze()
+        grad_T_n = E_props.grad_T_n     # shape = [n_facets]
+        heating -= self.kappa * grad_T_n * mesh.edge_len.squeeze()
 
         if fluxes is None:
-            fluxes = torch.zeros(self.E_props.n_edges, self.E_props.n_comp, device=self.device)
+            fluxes = torch.zeros(self.E_props.n_facets, self.E_props.n_comp, device=self.device)
             fluxes[:, 3] = heating
             return fluxes
         else:
@@ -224,22 +226,22 @@ class Heating(FVMEdgeFunc):
 class PressureForce(FVMEdgeFunc):
     """ Special case. N
         grad(rho) = div(rho I) """
-    E_props: FVMFacetInfo
+    E_props: FacetFlux
 
-    def __init__(self, E_props: FVMFacetInfo, phy_setup: PhysicalSetup, device="cpu"):
+    def __init__(self, E_props: FacetFlux, phy_setup: PhysicalSetup, device="cpu"):
         self.device = device
         self.E_props = E_props
         self.phy_setup = phy_setup
 
     def edge_fluxes(self, fluxes=None):
-        normals = self.E_props.normals             # shape = [n_edges, 2]
-        P_face = self.phy_setup.P_face      # shape = [n_edges, edges=2, n_comp=1]
+        normals = self.E_props.mesh.normals             # shape = [n_facets, 2]
+        P_face = self.phy_setup.P_face      # shape = [n_facets, facets=2, n_comp=1]
 
-        P_face = P_face.mean(dim=1)  # shape = [n_edges, 1]
-        P_n = P_face * normals                 # shape = [n_edges, 2]
+        P_face = P_face.mean(dim=1)  # shape = [n_facets, 1]
+        P_n = P_face * normals                 # shape = [n_facets, 2]
 
         if fluxes is None:
-            fluxes = torch.zeros(self.E_props.n_edges, self.E_props.n_comp, device=self.device)
+            fluxes = torch.zeros(self.E_props.n_facets, self.E_props.n_comp, device=self.device)
             fluxes[:, :2] = P_n
             return fluxes # _flat
         else:
@@ -248,9 +250,9 @@ class PressureForce(FVMEdgeFunc):
 
 class KTDiffusion(FVMEdgeFunc):
     """ Diffusion term from K-T solver """
-    E_props: FVMFacetInfo
+    E_props: FacetFlux
 
-    def __init__(self, v_factor, phy_setup: PhysicalSetup, E_props: FVMFacetInfo, device="cpu"):
+    def __init__(self, E_props: FacetFlux, v_factor, phy_setup: PhysicalSetup, device="cpu"):
         self.device = device
         self.v_factor = v_factor
         self.E_props = E_props
@@ -279,19 +281,19 @@ class KTDiffusion(FVMEdgeFunc):
         a = a + Vs_max  # shape = [n_edges, n_comp]
 
         # Flux = a/2 * (U_L - U_R) * edge_len
-        edge_len = E_props.edge_len
-        kt_fluxes = (a/2) * (Us[:, 0] - Us[:, 1]) * edge_len  # shape = [n_edges, n_comp]
+        edge_len = E_props.mesh.edge_len
+        kt_fluxes = (a/2) * (Us[:, 0] - Us[:, 1]) * edge_len  # shape = [n_facets, n_comp]
         return kt_fluxes
 
 
 class FVMEquation:
-    mesh: FVMMesh
-    E_props: FVMFacetInfo
+    mesh: FVMMesh2D
+    E_props: FacetFlux
     edges: FVMEdgeFunc
     cells: FVMCells
     n_comp: int
 
-    def __init__(self, cfg: ConfigFVM, phy_setup: PhysicalSetup, mesh: FVMMesh, n_comp, bc_tag, us_init=None):
+    def __init__(self, cfg: ConfigFVM, phy_setup: PhysicalSetup, mesh: FVMMesh2D, n_comp, bc_tag, us_init=None):
         self.cfg = cfg
         self.phy_setup = phy_setup
         self.device = cfg.device
@@ -302,18 +304,16 @@ class FVMEquation:
 
         # Physical parameters
 
-        E_props = FVMFacetInfo(self.phy_setup, cfg, mesh, n_comp, bc_tag, device=device)
+        E_props = FacetFlux(self.phy_setup, cfg, mesh, n_comp, bc_tag, device=device)
         self.cells = FVMCells(mesh.n_cells, n_comp, init_val=us_init, phys_setup=self.phy_setup, device=device)
+        self.flux_mat = E_props.mesh.flux_mat
         self.E_props = E_props
 
-        # Matrix for converting edge fluxes to cell divergence
-        self.flux_mat = self._build_flux_mat(mesh.cell_to_facet, -mesh.cell_facet_signs, mesh.n_facets, mesh.areas)  # shape = [n_cells, n_edge]
-
         self.P_force = PressureForce(E_props, self.phy_setup, device=device)
-        self.U_advect = Adevction(E_props, self.phy_setup, cfg=cfg, device=device)
-        self.U_visc = Viscosity(E_props, self.phy_setup, flux_mat=self.flux_mat, device=device)
+        self.U_advect = Adevction(E_props, self.phy_setup, device=device)
+        self.U_visc = Viscosity(E_props, self.phy_setup, device=device)
         self.Heat = Heating(E_props, self.phy_setup, cfg=cfg, device=device)
-        self.KT_diff = KTDiffusion(cfg.v_factor, self.phy_setup, E_props, device=device)
+        self.KT_diff = KTDiffusion(E_props, cfg.v_factor, self.phy_setup, device=device)
 
         self.t_solver = get_solver(self.cells, self, cfg)
 
@@ -326,7 +326,7 @@ class FVMEquation:
     def forward(self, primatives, dt, t):
         """ primatives.shape = (n_cells, n_component) """
         E_props = self.E_props
-        E_props.precompute_shared(primatives, dt)
+        E_props.compute_facet(primatives, dt)
 
         self.phy_setup.update(E_props)
 
@@ -344,34 +344,6 @@ class FVMEquation:
         divergence = self._flux_to_div(fluxes)
 
         return divergence
-
-    def _build_flux_mat(self, tri_to_edge, tri_edge_sign, n_edges, areas, dtype=torch.float32):
-        """
-        Build the incidence matrix T of shape (n_tri, n_edges).
-        For each triangle i and local edge j, we set:
-            T[i, tri_to_edge[i, j]] = tri_edge_sign[i, j].
-        """
-        c_print("Constricting flux matrix", color="bright_magenta")
-        # and that self.areas is a tensor of length n_tri.
-        n_tri, n_local = tri_to_edge.shape  # typically, n_local == 3
-
-        # Create row indices: each triangle i contributes n_local entries.
-        row_indices = torch.arange(n_tri).unsqueeze(1).expand(n_tri, n_local).reshape(-1)
-
-        # Flatten the edge indices from tri_to_edge for column indices.
-        col_indices = tri_to_edge.reshape(-1)
-        # Flatten the sign values from tri_edge_sign.
-        values = tri_edge_sign.reshape(-1).to(dtype)
-        # Compute the inverse areas (A_inv is diagonal) and scale the nonzero values.
-        areas_inv = (1.0 / areas.cpu()).to(dtype)
-        D_values = values * areas_inv[row_indices]
-        # Stack row and column indices for the sparse tensor.
-        D_indices = torch.stack([row_indices, col_indices])
-
-        D_shape = [n_tri, n_edges]
-        flux_mat = torch.sparse_coo_tensor(D_indices, D_values, size=D_shape, device="cpu", dtype=dtype).coalesce()
-        flux_mat = to_csr(flux_mat, self.device)
-        return flux_mat
 
     def _flux_to_div(self, fluxes):
         """ Compute cell divergence using fluxes.
