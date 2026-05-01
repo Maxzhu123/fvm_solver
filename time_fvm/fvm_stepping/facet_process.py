@@ -3,7 +3,7 @@ from cprint import c_print
 import torch
 
 from time_fvm.mesh_utils.mesh_store import Facet
-from time_fvm.sparse_utils import lift_sparse_matrix, combine_facet_operators, to_csr
+from time_fvm.sparse_utils import lift_sparse_matrix, combine_facet_operators, to_csr, interleave_sparse_rows
 from time_fvm.fvm_stepping.facet_boundary import BoundarySetter
 from time_fvm.fvm_stepping.limiter import SlopeLimiter
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ class MeshCache:
 
         (cell_disps, facet_dists_bc, G_mats, neigh_combine) = mesh_setup.cell_grad_stuff
         self.facet_dists_bc = facet_dists_bc.to(device).unsqueeze(-1).expand(-1, n_comp)
-        G_mats = torch.cat([G_mats[0], G_mats[1]], dim=0)
+        G_mats = interleave_sparse_rows(G_mats[0], G_mats[1]) # Want output to be easily reshaped.
         self.G_mats = to_csr(G_mats, device)
         self.neigh_combine = neigh_combine.to(device)
 
@@ -416,8 +416,8 @@ class FacetFlux:
             Us_cell_face.shape = (n_cells+n_facets_bc, N_component)
             Returns: Gradient matrix of shape (n_cells, 2, N_component)
         """
-        combined_grad = torch.mm(self.mesh.G_mats, Us_cell_face)  # combined_grad.shape == [2 * n_cells, N_component]
-        cell_grads = combined_grad.view(2, self.n_cells, self.n_comp).permute(1, 0, 2)    # shape = [n_cells, 2, N_component]
+        combined_grad = torch.mm(self.mesh.G_mats, Us_cell_face)  # combined_grad.shape == [n_cells*2, N_component]
+        cell_grads = combined_grad.view(self.n_cells, 2, self.n_comp)    # shape = [n_cells, 2, N_component]
         return cell_grads
 
     def _face_grads(self, Us):

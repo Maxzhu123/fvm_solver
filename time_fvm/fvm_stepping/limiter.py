@@ -81,6 +81,6 @@ class SlopeLimiter:
         """
         phi = self._limit(delta, dU)    # shape = [n_cells, neigh=3, n_comp]
         # Cell wide clamping
-        phi = torch.min(phi, dim=1, keepdim=True).values  # shape = [n_cells, neigh=1, n_comp]
+        phi = torch.amin(phi, dim=1, keepdim=True)  # shape = [n_cells, neigh=1, n_comp]
 
         return phi

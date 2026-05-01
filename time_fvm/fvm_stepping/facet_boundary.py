@@ -123,7 +123,7 @@ class BoundarySetter:
 
         U_face_flat.addmv_(
             self.A_corr,
-            cell_grads.reshape(-1),
+            cell_grads.view(-1),
         )
 
     def add_bc(self, cfg: ConfigFVM, bc_cfg: ConfigBC, bc_mask, cell_indices, bc_normals):

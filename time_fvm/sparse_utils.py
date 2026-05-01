@@ -293,175 +293,6 @@ def to_csr(A: torch.Tensor, device):
     return torch.sparse_csr_tensor(A.crow_indices().to(torch.int32), A.col_indices().to(torch.int32), A.values(), size=A.size(), device=device)
 
 
-def create_insertion_matrix(num_blocks, full_block_size, selected_indices, device=None, dtype=torch.float32):
-    """
-    Instead of fluxes[:, idxs] = A, use fluxes = S @ A.flatten()
-
-    Create a sparse matrix S that maps a flattened tensor with shape
-      (num_blocks * len(selected_indices))
-    to a flattened tensor with shape
-      (num_blocks * full_block_size)
-    by scattering the values into positions determined by selected_indices for each block.
-
-    For each block i and for each local index j (with v = selected_indices[j]),
-    set:
-        S[i * full_block_size + v,  i * len(selected_indices) + j] = 1.
-
-    Args:
-        num_blocks (int): Number of blocks (e.g. n_edges).
-        full_block_size (int): Size of the full block (e.g. n_component).
-        selected_indices (list or iterable): Indices within each block where values should be inserted.
-        device (torch.device, optional): Device for the resulting tensor.
-        dtype (torch.dtype, optional): Data type for the values.
-
-    Returns:
-        torch.Tensor: A sparse matrix of shape (num_blocks * full_block_size, num_blocks * len(selected_indices)).
-    """
-    num_selected = len(selected_indices)
-    total_rows = num_blocks * full_block_size
-    total_cols = num_blocks * num_selected
-
-    row_indices = []
-    col_indices = []
-    values = []
-
-    for block in range(num_blocks):
-        for j, v in enumerate(selected_indices):
-            row = block * full_block_size + v
-            col = block * num_selected + j
-            row_indices.append(row)
-            col_indices.append(col)
-            values.append(1.0)
-
-    indices = torch.tensor([row_indices, col_indices], dtype=torch.long, device=device)
-    values = torch.tensor(values, dtype=dtype, device=device)
-    S = torch.sparse_coo_tensor(indices, values, (total_rows, total_cols))
-    return S
-
-
-def invert_selection_matrix(num_blocks, block_size, selected_indices, device=None, dtype=torch.float32):
-    """
-    Create a matrix that "inverts" the selection performed by create_selection_matrix().
-
-    Given a flattened vector of shape (num_blocks * len(selected_indices)),
-    this function creates a sparse matrix that maps it to a flattened vector of shape
-    (num_blocks * block_size) by inserting each block’s values into the positions given by selected_indices.
-
-    In other words, if S = create_selection_matrix(num_blocks, block_size, selected_indices) extracts
-    the values, then this function returns a matrix S_inv such that:
-
-            x_extended = torch.zeros(num_blocks, block_size)
-            x_extended[:, selected_indices] = x
-        OR:
-            S_inv @ (S @ x) = x_extended
-
-    where x_extended is the larger vector with the selected entries inserted into positions specified by selected_indices.
-
-    Args:
-        num_blocks (int): Number of blocks.
-        block_size (int): Size of the full block.
-        selected_indices (list or iterable): Indices within each block that were selected.
-        device (torch.device, optional): Device to create the matrix on.
-        dtype (torch.dtype, optional): Data type for the matrix.
-
-    Returns:
-        torch.Tensor: A sparse matrix of shape
-          (num_blocks * block_size, num_blocks * len(selected_indices))
-    """
-    selected_indices = list(selected_indices)
-    num_selected = len(selected_indices)
-    total_rows = num_blocks * block_size
-    total_cols = num_blocks * num_selected
-
-    row_indices = []
-    col_indices = []
-    values = []
-
-    for block in range(num_blocks):
-        for j, idx in enumerate(selected_indices):
-            row = block * block_size + idx
-            col = block * num_selected + j
-            row_indices.append(row)
-            col_indices.append(col)
-            values.append(1.0)
-
-    indices = torch.tensor([row_indices, col_indices], dtype=torch.long, device=device)
-    values = torch.tensor(values, dtype=dtype, device=device)
-    S_inv = torch.sparse_coo_tensor(indices, values, (total_rows, total_cols)).to_dense()
-    return S_inv
-
-
-def create_selection_matrix(n_blocks, block_size, selected_dims, weights=None):
-    """
-    Constructs a sparse selection matrix A that selects (and optionally weights) entries
-    from a block-structured vector.
-
-    The resulting matrix A has shape (n_blocks * len(selected_dims), n_blocks * block_size)
-    so that for each block i and for each selected dimension index r:
-
-        A[i * len(selected_dims) + r, i * block_size + selected_dims[r]] = weight
-          (or 1 if weights is None)
-
-    This can be used, for example, to represent an operation like:
-
-        visc.flatten() = A * E_props.grad_faces_n.flatten()
-
-    where each block corresponds to an edge and selected_dims are the columns (dimensions)
-    chosen from each block.
-
-    Args:
-        n_blocks (int): Number of blocks (e.g., m, the number of edges).
-        block_size (int): The size of each block (e.g., p, the total number of components).
-        selected_dims (list or 1D tensor): The indices to select from each block.
-        weights (Tensor, optional): A tensor of shape (n_blocks, len(selected_dims)) containing
-                                    weights for each selected entry. If provided, these values are
-                                    used as the nonzero entries in A. Defaults to None (all ones).
-
-    Returns:
-        torch.sparse.FloatTensor: The sparse selection matrix A.
-    """
-    k = len(selected_dims)
-    rows = []
-    cols = []
-    vals = []
-
-    # Loop over each block and each selected index.
-    for i in range(n_blocks):
-        for r, d in enumerate(selected_dims):
-            rows.append(i * k + r)
-            cols.append(i * block_size + int(d))
-            if weights is not None:
-                vals.append(weights[i, r].item())
-            else:
-                vals.append(1.0)
-
-    indices = torch.tensor([rows, cols], dtype=torch.long)
-    values = torch.tensor(vals, dtype=torch.float32)
-
-    # Construct the sparse matrix of shape (n_blocks * k, n_blocks * block_size)
-    A = torch.sparse_coo_tensor(indices, values, size=(n_blocks * k, n_blocks * block_size))
-    return A
-
-
-def create_block_diagonal(normals):
-    """
-    Create a block diagonal matrix D that has, for each block i,
-    a block of shape (2, 1) equal to normals[i, :].
-
-    Args:
-        normals (torch.Tensor): Tensor of shape (n_edges, 2).
-
-    Returns:
-        torch.Tensor: A block diagonal matrix of shape (n_edges*2, n_edges).
-    """
-    n_edges = normals.shape[0]
-    D = torch.zeros(n_edges * 2, n_edges, dtype=normals.dtype, device=normals.device)
-    for i in range(n_edges):
-        # Place normals[i, :] as a column in the i-th block.
-        D[2 * i:2 * i + 2, i] = normals[i, :]
-    return D
-
-
 def combine_facet_operators(A_main, A_bc, b_bc, bc_edge_mask, n_edges, n_cells, n_comp, device):
     """
     Combines a main-edge operator and a boundary-edge operator into a single global operator.
@@ -670,3 +501,46 @@ def lift_sparse_matrix(A_old: torch.Tensor, n_comp: int):
     return A_new
 
 
+def interleave_sparse_rows(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Given sparse COO tensors a, b of shape (m, n), return sparse COO tensor
+    of shape (2m, n) with rows interleaved:
+
+        out[0] = a[0]
+        out[1] = b[0]
+        out[2] = a[1]
+        out[3] = b[1]
+        ...
+
+    """
+    if a.layout != torch.sparse_coo or b.layout != torch.sparse_coo:
+        raise TypeError("a and b must be sparse COO tensors")
+
+    if a.shape != b.shape or a.ndim != 2:
+        raise ValueError("a and b must both have shape (m, n)")
+
+    a = a.coalesce()
+    b = b.coalesce()
+
+    m, n = a.shape
+
+    ai = a.indices()
+    bi = b.indices()
+
+    # Map row r from a -> 2r, row r from b -> 2r + 1
+    ai_new = ai.clone()
+    bi_new = bi.clone()
+
+    ai_new[0] = 2 * ai[0]
+    bi_new[0] = 2 * bi[0] + 1
+
+    indices = torch.cat([ai_new, bi_new], dim=1)
+    values = torch.cat([a.values(), b.values()], dim=0)
+
+    return torch.sparse_coo_tensor(
+        indices,
+        values,
+        size=(2 * m, n),
+        device=a.device,
+        dtype=a.dtype,
+    ).coalesce()
