@@ -154,7 +154,7 @@ class Adevction(FVMEdgeFunc):
         advec_flux = advec_flux.mean(dim=1)              # shape = [n_edges, n_comp=3]
 
         if fluxes is None:
-            return advec_flux
+            return advec_flux.contiguous()
         else:
             fluxes += advec_flux
 
@@ -205,14 +205,15 @@ class Heating(FVMEdgeFunc):
 
         tau = self.stress_calc.tau      # shape = [n_facets, 2, 2]
 
-        V_face = V_face.mean(dim=1)     # shape = [n_facets, 2]
-        heating = (tau * V_face.unsqueeze(1) * normals.unsqueeze(-1)).sum(dim=(-1, -2))
+        # V_face = V_face.mean(dim=1, keepdim=True)     # shape = [n_facets, 1, 2]
+        heating = (tau * V_face * normals.unsqueeze(-1)).sum(dim=(-1, -2))      # Take average over all faces.
 
         """ Thermal conductivity:
                 div(grad(T)) = sum(grad(T) * n_f)
         """
         grad_T_n = E_props.grad_T_n     # shape = [n_facets]
-        heating -= self.kappa * grad_T_n * mesh.edge_len.squeeze()
+        # heating -= self.kappa * grad_T_n * mesh.edge_len.squeeze()
+        heating.addcmul_(grad_T_n, mesh.edge_len.squeeze(), value=-self.kappa)
 
         if fluxes is None:
             fluxes = torch.zeros(self.E_props.n_facets, self.E_props.n_comp, device=self.device)
@@ -294,7 +295,6 @@ class KTDiffusion(FVMEdgeFunc):
             return kt_fluxes
         else:
             fluxes += kt_fluxes
-
 
 
 class FVMEquation:

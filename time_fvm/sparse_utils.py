@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.tri as tri
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+
 def plot_points(Xs, values, lims=None, title="", show_index=False, Xlims=None):
     Xs = Xs.cpu()
     values = values.cpu()
@@ -90,15 +91,15 @@ def plot_interp_cell(Xs, values, triangles, Xlims=None, title="", edgecolors="no
         xlim = (Xs[:, 0].min(), Xs[:, 0].max())
         ylim = (Xs[:, 1].min(), Xs[:, 1].max())
 
-    in_region = []
-    for tri_indices in triang.triangles:
-        verts = np.column_stack((Xs[tri_indices, 0], Xs[tri_indices, 1]))
-        if np.all((verts[:, 0] >= xlim[0]) & (verts[:, 0] <= xlim[1]) &
-                  (verts[:, 1] >= ylim[0]) & (verts[:, 1] <= ylim[1])):
-            in_region.append(True)
-        else:
-            in_region.append(False)
-    in_region = np.array(in_region)
+    triangles = triang.triangles  # shape: (n_triangles, 3)
+    verts = Xs[triangles]  # shape: (n_triangles, 3, 2)
+
+    in_region = (
+            (verts[:, :, 0] >= xlim[0]) &
+            (verts[:, :, 0] <= xlim[1]) &
+            (verts[:, :, 1] >= ylim[0]) &
+            (verts[:, :, 1] <= ylim[1])
+    ).all(axis=1)
 
     # Create a new triangulation using only the triangles inside the region.
     new_triangles = triang.triangles[in_region]
