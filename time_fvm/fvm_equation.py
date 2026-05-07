@@ -105,14 +105,9 @@ class PhysicalSetup:
         """ Inverse of eos_P """
         return P / (self.R * rho)
 
-    def eos_rho(self, P, T):
-        """ Inverse of eos_P """
-        return P / (self.R * T)
-
     def update(self, E_props: FacetFlux):
         self._tau(E_props)
         self._pressure(E_props)
-
 
 
 class FVMEdgeFunc(ABC):
