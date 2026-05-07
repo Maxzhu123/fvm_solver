@@ -126,7 +126,7 @@ class TSolver(ABC):
 
     @torch.inference_mode()
     def solve(self):
-        run = False
+        run = True
         if run:
             self._solve()
         else:
