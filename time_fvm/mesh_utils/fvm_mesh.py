@@ -126,7 +126,6 @@ class FVMMesh2D(FVMMesh):
         self._compute_facet_props(vertices, cells, facets)
 
     def _compute_facet_props(self, vertices, cells, facets):
-        print("Compute facet normals and lengths")
         # Compute facet normals and lengths
         facet_vertex = vertices[facets]
         facet_vectors = facet_vertex[:, 1] - facet_vertex[:, 0]        # Ordering is used as facet index from here.
@@ -166,11 +165,8 @@ class FVMMesh2D(FVMMesh):
         self.cent_to_facet_disp = cent_to_facet_disp
         self.facet_to_cell_bc = torch.stack(facet_to_cell_bc).squeeze()
 
-        print(f'Compute grad weighting')
         # Compute grad weighting
         self.cell_grad_stuff = self._grad_weighting(cell_to_facet, facet_to_cell, self.centroids, midpoints, normals)
-
-        print("Done")
 
     def _cell_area(self, vertices):
         """ vertices.shape = (n_cells, 3, 2) """

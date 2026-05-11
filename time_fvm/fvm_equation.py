@@ -45,7 +45,7 @@ class PhysicalSetup:
          """
 
         momentum = V * rho
-        Q = rho * (self.C_v * T + 0.5 * V.norm(dim=-1, keepdim=True) ** 2)
+        Q = rho * (self.C_v * T + 0.5 * V.square().sum(dim=-1, keepdim=True))
         return momentum, rho, Q
 
     def _tau(self, E_props: FacetFlux):
@@ -207,7 +207,6 @@ class Heating(FVMEdgeFunc):
 
         tau = self.stress_calc.tau      # shape = [n_facets, 2, 2]
 
-        # V_face = V_face.mean(dim=1, keepdim=True)     # shape = [n_facets, 1, 2]
         heating = (tau * V_face * normals.unsqueeze(-1)).sum(dim=(-1, -2))      # Take average over all faces.
 
         """ Thermal conductivity:

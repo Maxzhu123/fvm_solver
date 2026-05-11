@@ -276,8 +276,6 @@ class FacetFlux:
         self.mesh.build_spm_face_grads(self.n_comp, self.dirich_mask, self.neumann_mask, self.dirich_val, self.neumann_val)
         c_print('Complete init FVMEdgeInfo', color="magenta")
 
-        self.U_face_all = torch.empty((self.n_facets, 2, self.n_comp + 6), device=self.device)    # [momx, momy, rho, Q, face_grad X 4]
-
     def clear_temp(self):
         self.mesh.clear_temp()
         del self.dirich_val, self.neumann_val
@@ -364,7 +362,7 @@ class FacetFlux:
         cell_values_bc = torch.cat([U_facet_bc, grad_F_bc], dim=1)      # shape = [n_facets_bc, n_comp+6]
 
         # Project to left and right face values
-        U_face_all = self.U_face_all                                    # shape = [n_facets, 2, n_comp+6]
+        U_face_all = torch.empty((self.n_facets, 2, self.n_comp + 6), device=self.device) #self.U_face_all                                    # shape = [n_facets, 2, n_comp+6]
         U_face_all[mesh.cell_to_facet, mesh.cell_facet_signs] = cell_values
         U_face_all[mesh.bc_locations, mesh.bc_facet_side] = cell_values_bc
 
@@ -377,7 +375,7 @@ class FacetFlux:
         self.mom_facet, _, self.Q_facet = self.phy_setup.primatives_to_state(self.Vs_facet, self.rho_facet, self.T_facet)
         self.phi = (self.Vs_facet * mesh.normals.unsqueeze(1)).sum(dim=-1) # shape = [n_facets, facets=2, ]
 
-        # Compute gradient on facet.
+        # Compute gradient on facet and select wanted components
         grad_faces_n = self._face_grads(Us)        # shape = [n_faces, n_comp]
         grad_F_dn = grad_faces_n[:, [0, 1, 3]]   # shape = [n_faces, 3]
 
