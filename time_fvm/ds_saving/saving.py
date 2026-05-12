@@ -5,11 +5,11 @@ import torch
 from cprint import c_print
 
 from time_fvm.utils.plotting import plot_interp_cell
-from time_fvm.fvm_stepping.facet_process import FacetFlux
+from time_fvm.fvm_stepping.facet_process import FacetCalc
 from base_cfg import ARTEFACT_DIR
 
 class Saver:
-    def __init__(self, E_props: FacetFlux, save_dir=None):
+    def __init__(self, E_props: FacetCalc, save_dir=None):
         if save_dir is None:
             timestamp = datetime.now().strftime("%m-%d_%H-%M-%S")
             self.save_dir = f'{ARTEFACT_DIR}/fvm_saves/{timestamp}'
@@ -43,7 +43,7 @@ class Saver:
         np.savez_compressed(f'{self.save_dir}/mesh_props.npz', **self.mesh_props)
         c_print(f"Saved mesh properties to '{self.save_dir}/mesh_props.npz'", color="green")
 
-    def save(self, t, E_props: FacetFlux, primatives):
+    def save(self, t, E_props: FacetCalc, primatives):
         if not self.saved_mesh_props:
             self.save_initial()
             self.saved_mesh_props = True

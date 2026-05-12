@@ -12,7 +12,7 @@ class BCMode(Enum):
 @dataclass
 class ConfigFVM(ABC):
     device: str = "cuda"
-    compile: bool = True
+    compile: bool = False
     profile: bool = False         # Used for profiling code.
 
     problem_setup: str = None    # {ellipse, nozzle}

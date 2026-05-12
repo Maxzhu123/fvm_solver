@@ -6,7 +6,7 @@ from time_fvm.utils.sparse import to_sparse, SPM
 
 if TYPE_CHECKING:
     from torch import Tensor
-    from time_fvm.fvm_stepping.facet_process import FacetFlux
+    from time_fvm.fvm_stepping.facet_process import FacetCalc
     from time_fvm.fvm_equation import PhysicalSetup
 
 
@@ -28,7 +28,7 @@ class BoundarySetter:
     # Merged BC groups, one per unique BCMode
     bc_groups: dict  # {BCMode: (BC, cell_indices: Tensor)}
 
-    def __init__(self, E_props: FacetFlux, phy_setup: PhysicalSetup):
+    def __init__(self, E_props: FacetCalc, phy_setup: PhysicalSetup):
         self.device = E_props.device
         self.phy_setup = phy_setup
 
@@ -234,7 +234,7 @@ class BoundarySetter:
         A = to_sparse(A, device=device)
         return A
 
-    def _build_spm_face_vals(self, E_props: FacetFlux):
+    def _build_spm_face_vals(self, E_props: FacetCalc):
         """ Compute bc facet values using sparse matrix multiplication. """
 
         device = E_props.device
