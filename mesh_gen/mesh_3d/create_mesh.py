@@ -1,290 +1,342 @@
 import numpy as np
-import pyvista as pv
-import tetgen
-import os
+import gmsh
 import logging
-from scipy.spatial import KDTree
-
 from mesh_gen.mesh_gen_utils import MeshProps
 
 
 # ---------------------------------------------------------------------------
-# Distance-based background-mesh refinement  (3D analog of 2D refine_fn)
+# Helpers
 # ---------------------------------------------------------------------------
 
-
-def _build_refinement_bgmesh(merged_surface, dist_req_surfaces, mesh_props):
-    """Build a background mesh with per-node ``target_size`` for refinement.
-
-    Mirrors the 2D ``refine_fn`` logic:
-      - cells are smallest (``min_cell``) near surfaces tagged ``dist_req=True``,
-      - cells grow to ``max_cell`` at distance ≥ ``lengthscale``.
-
-    Uses each surface's analytical ``distance(points)`` method for accuracy.
-    tetgen reads the ``"target_size"`` point-data array and uses it as the
-    desired local edge-length.
-    """
-    # 1. Coarse background mesh covering the whole domain
-    bg_tet = tetgen.TetGen(merged_surface)
-    # bg_tet.add_hole([0, 0, 0])  # add a hole to ensure bgmesh is not a single solid cell
-    stdout_fd = os.dup(1)
-    try:
-        with open(os.devnull, "w") as devnull:
-            os.dup2(devnull.fileno(), 1)
-            bg_tet.tetrahedralize(switches="pq1.2a0.2")
-    finally:
-        os.dup2(stdout_fd, 1)
-        os.close(stdout_fd)
-
-    bgmesh = bg_tet.grid
-    bgmesh = bgmesh.extract_cells(bgmesh.celltypes == pv.CellType.TETRA).clean()
-    bg_points = np.array(bgmesh.points)
-
-    # 2. Minimum signed distance to any dist_req surface, then take absolute value
-    dists = [surface.distance(bg_points) for surface in dist_req_surfaces]
-    dist = np.min(np.column_stack(dists), axis=1)
-    # Clamp negative distances (inside holes) to 0: refinement only needs proximity
-    dist = np.maximum(dist, 0)
-
-    # 3. Exponential blend: small cells near surface → large cells far away
-    #    (same formula as the 2D refine_fn threshold)
-    h_min = mesh_props.min_cell
-    h_max = mesh_props.max_cell
-    lengthscale = mesh_props.lengthscale
-
-    t = np.clip(dist / lengthscale, 0.0, 1.0)
-    sizes = h_min + (h_max - h_min) * t
-    bgmesh.point_data["target_size"] = sizes
-    return bgmesh
+def _set_mesh_options(mesh_props):
+    """Configure GMSH mesh sizing and quality options.  Returns (h_min, h_max)."""
+    h_min = mesh_props.min_cell ** (1/3)
+    h_max = mesh_props.max_cell ** (1/3)
+    print(f'{h_min = }, {h_max = }')
+    gmsh.option.setNumber("General.Verbosity", 2)
+    gmsh.option.setNumber("Mesh.MeshSizeMin", h_min)
+    gmsh.option.setNumber("Mesh.MeshSizeMax", h_max)
+    gmsh.option.setNumber("Mesh.Algorithm", 1)
+    gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+    gmsh.option.setNumber("Mesh.Optimize", 1)
+    gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
+    gmsh.option.setNumber("Mesh.OptimizeThreshold", 0.8)
+    return h_min, h_max
 
 
-# ---------------------------------------------------------------------------
-# Face extraction from tetrahedral grid
-# ---------------------------------------------------------------------------
-def _extract_faces_from_tets(tetra):
-    """Extract all unique triangular faces from tetrahedra and classify them.
-
-    Args:
-        tetra: (M, 4) integer array of tetrahedra vertex indices.
+def _build_occ(coords):
+    """Build OCC volumes and capture their original boundary surfaces.
 
     Returns:
-        int_faces: (K, 3) interior faces (appear in 2 tets).
-        bound_faces: (L, 3) boundary faces (appear in 1 tet).
-        face_to_tet: dict mapping sorted face tuple → list of tet indices.
+        domain_info: list of ``(vol_dim_tag, mark_id, dist_req, [face_dim_tags])``
+                     for non-hole real_face facets.
+        hole_info:   list of ``(vol_dim_tag, mark_id, dist_req, [face_dim_tags])``
+                     for hole facets.  *mark_id* is provided for real_face holes
+                     (e.g. a "NavierWall" sphere), ``None`` otherwise.
+        marker_names: dict ``{mark_id: name}``.
+        other_faces:  list of ``(dim, tag)`` for faces of non-real_face facets
+                      (e.g. outer domain boundary when you only want a cutout wall).
     """
-    # All 4 faces of each tet, in consistent winding
-    face_patterns = np.array([
-        [0, 1, 2],
-        [0, 2, 3],
-        [0, 3, 1],
-        [1, 3, 2],
-    ])
+    domain_info = []
+    hole_info = []
+    marker_names = {0: "Normal"}
+    other_faces = []
 
-    all_faces = tetra[:, face_patterns]  # (M, 4, 3)
-    all_faces_flat = all_faces.reshape(-1, 3)  # (4M, 3)
-    tet_ids = np.repeat(np.arange(len(tetra)), 4)
+    for i, facet in enumerate(coords):
+        vol_tag = facet.build_occ()
+        gmsh.model.occ.synchronize()
+        bnd = gmsh.model.getBoundary([vol_tag], oriented=False)
 
-    # Sort vertices within each face for deduplication
-    sorted_faces = np.sort(all_faces_flat, axis=1)
+        mark_id = (i + 1) if facet.real_face else None
+        if facet.real_face:
+            marker_names[i + 1] = facet.name
 
-    # Deduplicate: use a dict
-    face_dict = {}
-    for i in range(len(sorted_faces)):
-        key = tuple(sorted_faces[i].tolist())
-        if key not in face_dict:
-            face_dict[key] = []
-        face_dict[key].append(tet_ids[i])
-
-    int_faces = []
-    bound_faces = []
-    face_to_tet = {}
-
-    for key, tets in face_dict.items():
-        face_to_tet[key] = tets
-        if len(tets) == 1:
-            bound_faces.append(key)
-        elif len(tets) == 2:
-            int_faces.append(key)
+        if facet.hole:
+            hole_info.append((vol_tag, mark_id, facet.dist_req, bnd))
         else:
-            logging.warning(f"Face {key} appears in {len(tets)} tets (expected 1 or 2)")
+            if facet.real_face:
+                domain_info.append((vol_tag, mark_id, facet.dist_req, bnd))
+            else:
+                other_faces.extend(bnd)
 
-    int_faces = np.array(int_faces, dtype=int) if int_faces else np.zeros((0, 3), dtype=int)
-    bound_faces = np.array(bound_faces, dtype=int) if bound_faces else np.zeros((0, 3), dtype=int)
-
-    return int_faces, bound_faces, face_to_tet
+    return domain_info, hole_info, marker_names, other_faces
 
 
-def _assign_boundary_markers(points, bound_faces, surface_centers, surface_markers):
-    """Assign a marker to each boundary face by nearest-neighbour lookup.
+def _fragment_and_remove(domain_info, hole_info, other_faces):
+    """Fragment domain + holes, then remove hole-derived volumes.
 
-    Args:
-        points: (N, 3) vertex coordinates.
-        bound_faces: (L, 3) boundary face vertex indices.
-        surface_centers: (S, 3) face centers of the input surface mesh.
-        surface_markers: (S,) integer markers from the input surface.
+    Strategy (see test_algo.py):
+      1. ``occ.fragment(objects, tools)`` where
+           *objects* = all domain surfaces + volumes + other faces,
+           *tools*   = all hole surfaces   + volumes.
+         ``removeObject=True, removeTool=True`` so originals are cleaned up.
+      2. ``out_map[i]`` maps each old entity to its new counterpart(s).
+         Use it to find which new surfaces came from which old facet.
+      3. ``occ.remove`` only the *hole-derived* new volumes (``recursive=False``)
+         so their boundary surfaces survive.
+      4. Final volumes = domain-derived minus hole-derived.
 
     Returns:
-        face_markers: (L,) integer markers.
+        boundary_tags:  ``{mark_id: [surface_tag, …]}``.
+        dist_req_tags:  flat list of surface tags needing distance refinement.
+        final_vols:     list of ``(dim, tag)`` for remaining 3-D volumes.
     """
-    if len(bound_faces) == 0:
-        return np.array([], dtype=int)
+    # Build input lists — surfaces FIRST, then volumes (matching test_algo.py)
+    objects = []  # domain faces  + volumes  + other_faces
+    tools = []    # hole   faces  + volumes
 
-    # Compute face centers of boundary faces
-    face_verts = points[bound_faces]  # (L, 3, 3)
-    face_centers = np.mean(face_verts, axis=1)  # (L, 3)
+    domain_old_vols = []
+    for vol_tag, mark_id, dist_req, faces in domain_info:
+        domain_old_vols.append(vol_tag)
+        objects.extend(faces)
+        objects.append(vol_tag)
 
-    tree = KDTree(surface_centers)
-    _, idx = tree.query(face_centers)
-    return surface_markers[idx]
+    for vol_tag, mark_id, dist_req, faces in hole_info:
+        tools.extend(faces)
+        tools.append(vol_tag)
+
+    objects.extend(other_faces)
+
+    # --- 1. Fragment ---
+    out, out_map = gmsh.model.occ.fragment(objects, tools,
+                                           removeObject=True, removeTool=True)
+    gmsh.model.occ.synchronize()
+
+    inputs = objects + tools
+    # Dict lookup is O(1) and avoids any tuple-equality subtleties with gmsh tags
+    idx_of = {old: i for i, old in enumerate(inputs)}
+
+    def _mapped(old_entities):
+        result = []
+        for old in old_entities:
+            result.extend(out_map[idx_of[old]])
+        return list(dict.fromkeys(result))  # deduplicate, preserve order
+
+    # --- 2. Remove hole-derived volumes (keep their boundary faces) ---
+    hole_vols_new = set()
+    for vol_tag, mark_id, _, _ in hole_info:
+        for dim, tag in _mapped([vol_tag]):
+            if dim == 3:
+                hole_vols_new.add((dim, tag))
+
+    if hole_vols_new:
+        gmsh.model.occ.remove(list(hole_vols_new), recursive=False)
+        gmsh.model.occ.synchronize()
+
+    # --- 3. Collect final volumes (domain-derived minus hole-derived) ---
+    domain_vols_new = set()
+    for vol_tag in domain_old_vols:
+        for dim, tag in _mapped([vol_tag]):
+            if dim == 3:
+                domain_vols_new.add((dim, tag))
+    final_vols = sorted(domain_vols_new - hole_vols_new)
+
+    # --- 4. Match boundary surfaces via out_map ---
+    boundary_tags = {}
+    dist_req_tags = []
+
+    def _collect_faces(mark_id, dist_req, old_faces):
+        new_surf_tags = [tag for dim, tag in _mapped(old_faces) if dim == 2]
+        if mark_id is not None:
+            boundary_tags[mark_id] = new_surf_tags
+        if dist_req:
+            dist_req_tags.extend(new_surf_tags)
 
 
-def _build_switches(mesh_props: MeshProps, quality_kwargs: dict) -> str:
-    """Build tetgen switches string from MeshProps and quality kwargs.
+    for vol_tag, mark_id, dist_req, old_faces in domain_info:
+        _collect_faces(mark_id, dist_req, old_faces)
 
-    Uses the -a switch for maximum volume constraint (controls cell size).
+    for vol_tag, mark_id, dist_req, old_faces in hole_info:
+        _collect_faces(mark_id, dist_req, old_faces)
+
+    # Unassigned → marker 0
+    assigned = set().union(*boundary_tags.values())
+    all_bnd = gmsh.model.getBoundary(final_vols, oriented=False)
+    boundary_tags[0] = [t for _, t in all_bnd if t not in assigned]
+
+    return boundary_tags, dist_req_tags, final_vols
+
+
+def _assign_physical_groups(boundary_tags, marker_names, final_vols):
+    """Create GMSH physical groups for boundary surfaces and the domain volume."""
+    for mark_id, tags in boundary_tags.items():
+        if tags:
+            gmsh.model.addPhysicalGroup(2, tags, mark_id)
+            gmsh.model.setPhysicalName(2, mark_id, marker_names[mark_id])
+
+    gmsh.model.addPhysicalGroup(3, [v[1] for v in final_vols], 1)
+    gmsh.model.setPhysicalName(3, 1, "Domain")
+
+
+def _setup_distance_field(dist_req_tags, h_min, h_max, lengthscale):
+    """Create a GMSH background-mesh field for distance-based refinement."""
+    if not dist_req_tags:
+        return
+
+    dist_fields = []
+    for tag in dist_req_tags:
+        fid = gmsh.model.mesh.field.add("Distance")
+        gmsh.model.mesh.field.setNumbers(fid, "FacesList", [tag])
+        dist_fields.append(fid)
+
+    min_field = gmsh.model.mesh.field.add("Min")
+    gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", dist_fields)
+
+    final_field = gmsh.model.mesh.field.add("Threshold")
+    gmsh.model.mesh.field.setNumber(final_field, "InField", min_field)
+    gmsh.model.mesh.field.setNumber(final_field, "SizeMin", h_min)
+    gmsh.model.mesh.field.setNumber(final_field, "SizeMax", h_max)
+    gmsh.model.mesh.field.setNumber(final_field, "DistMin", 0.0)
+    gmsh.model.mesh.field.setNumber(final_field, "DistMax", lengthscale)
+    gmsh.model.mesh.field.setAsBackgroundMesh(final_field)
+
+
+def _extract_faces_from_tets(tetra):
+    """Extract all unique triangular faces from tetrahedra and classify them."""
+    if len(tetra) == 0:
+        return np.zeros((0, 3), dtype=int), np.zeros((0, 3), dtype=int), None
+
+    face_patterns = np.array([[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]])
+    all_faces_flat = tetra[:, face_patterns].reshape(-1, 3)
+    sorted_faces = np.sort(all_faces_flat, axis=1)
+    unique_faces, counts = np.unique(sorted_faces, axis=0, return_counts=True)
+
+    if np.any(counts > 2):
+        logging.warning("Some faces appear in more than 2 tetrahedra!")
+
+    return unique_faces[counts == 2], unique_faces[counts == 1], None
+
+
+def _extract_mesh_entities():
+    """After mesh generation, extract nodes, tetrahedra and faces.
+
+    Returns:
+        points:        (N, 3) array.
+        nodeId_to_idx: 1-D array mapping gmsh node tag → 0-based index.
+        tetra:         (M, 4) array.
+        int_faces:     (K, 3) interior faces.
+        bound_faces:   (L, 3) boundary faces.
     """
-    max_vol = mesh_props.max_cell * 2.0  # approximate tetra volume from target area
+    node_tags, coords, _ = gmsh.model.mesh.getNodes()
+    points = np.array(coords).reshape(-1, 3)
 
-    # Start with quality mesh generation
-    switches = "p"
+    max_tag = int(np.max(node_tags)) if len(node_tags) > 0 else 0
+    nodeId_to_idx = np.zeros(max_tag + 1, dtype=np.int64)
+    nodeId_to_idx[node_tags] = np.arange(len(node_tags))
 
-    # Volume constraint
-    # switches += f"a0.01"
+    elem_types, _, elem_nodes = gmsh.model.mesh.getElements(3)
+    tetra_list = [
+        nodes.reshape(-1, 4)
+        for etype, nodes in zip(elem_types, elem_nodes) if etype == 4
+    ]
+    tetra = np.vstack(tetra_list) if tetra_list else np.zeros((0, 4), dtype=int)
+    tetra = nodeId_to_idx[tetra]
 
-    # Quality parameters
-    if "mindihedral" in quality_kwargs:
-        switches += f"q{quality_kwargs["minratio"]:.1f}/{quality_kwargs['mindihedral']:.1f}"
+    int_faces, bound_faces, _ = _extract_faces_from_tets(tetra)
+    return points, nodeId_to_idx, tetra, int_faces, bound_faces
 
-    return switches
+
+def _build_face_markers(bound_faces, nodeId_to_idx):
+    """Map each boundary face to its GMSH physical-group marker.
+
+    Returns:
+        face_markers: (L,) array of integer marker IDs.
+    """
+    face_to_marker = {}
+    for pdim, ptg in gmsh.model.getPhysicalGroups(2):
+        for ent in gmsh.model.getEntitiesForPhysicalGroup(pdim, ptg):
+            etypes, _, enodetags = gmsh.model.mesh.getElements(pdim, ent)
+            for etype, nodes in zip(etypes, enodetags):
+                if etype == 2:                      # triangle
+                    for nd in nodes.reshape(-1, 3):
+                        face_to_marker[tuple(np.sort(nodeId_to_idx[nd]))] = ptg
+
+    face_markers = np.ones(len(bound_faces), dtype=int)
+    for i, face in enumerate(bound_faces):
+        face_markers[i] = face_to_marker.get(tuple(np.sort(face)), 1)
+    return face_markers
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics (kept as public API)
+# ---------------------------------------------------------------------------
+
+def print_gmsh_quality_metrics():
+    """Print element-quality statistics for tetrahedral elements."""
+    elem_types, elem_tags, _ = gmsh.model.mesh.getElements()
+    quality_names = ["minSICN", "minSJ", "gamma", "minEdge", "maxEdge", "volume"]
+
+    for etype, tags in zip(elem_types, elem_tags):
+        if etype != 4 or len(tags) == 0:
+            continue
+        name, *_ = gmsh.model.mesh.getElementProperties(etype)
+        print(f"\nElement type {etype}: {name}")
+        print(f"Number of elements: {len(tags)}")
+        for qn in quality_names:
+            try:
+                q = np.array(
+                    gmsh.model.mesh.getElementQualities(tags, qn), dtype=float,
+                )
+                print(
+                    f"  {qn:8s}: "
+                    f"min={q.min():.6e}, "
+                    f"mean={q.mean():.6e}, "
+                    f"max={q.max():.6e}, "
+                    f"p01={np.percentile(q, 1):.6e}, "
+                    f"p99={np.percentile(q, 99):.6e}"
+                )
+            except Exception as e:
+                print(f"  {qn:8s}: not available ({e})")
 
 
 # ---------------------------------------------------------------------------
 # Main API
 # ---------------------------------------------------------------------------
-def create_mesh_3d(coords: list, mesh_props: MeshProps, quality_kwargs=None):
-    """Generate a 3D tetrahedral mesh from a list of MeshSurface3D objects.
 
-    Analogous to the 2D create_mesh() pipeline:
-      1. Assign unique markers to each surface and merge.
-      2. Build a background mesh for distance-based refinement (if any dist_req surfaces).
-      3. Tetrahedralize with quality/volume switches and optional bgmesh.
-      4. Extract points, tetrahedra, interior/boundary faces, and face markers.
+def create_mesh_3d(coords: list, mesh_props: MeshProps):
+    """Generate a 3D tetrahedral mesh from a list of ``MeshSurface3D`` objects.
+
+    Pipeline:
+      1. Build OCC geometry; fragment domain + holes via ``occ.fragment`` to track
+         boundary surfaces; remove hole volumes via ``occ.remove``.
+      2. Assign GMSH physical groups.
+      3. Set up distance-based refinement fields.
+      4. Generate mesh and extract nodes, tetrahedra, faces, and markers.
 
     Args:
-        coords: list of MeshSurface3D objects defining the domain.
-        mesh_props: MeshProps with min_size, max_size, lengthscale.
-        quality_kwargs: dict passed to tetgen.tetrahedralize()
-                        (e.g. dict(order=1, mindihedral=30, minratio=1.5)).
+        coords:     list of ``MeshSurface3D`` objects defining the domain.
+        mesh_props: ``MeshProps`` with *min_cell*, *max_cell*, *lengthscale*.
 
     Returns:
-        mesh_specs: tuple of (
-            (points, tetra),          # point and cell arrays
-            (None, face_markers),     # markers (point markers not used for 3D)
-            (int_faces, bound_faces), # face arrays
-        )
-        marker_names: dict mapping marker_id → name.
+        mesh_specs:   ``((points, tetra), (None, face_markers),
+                       (int_faces, bound_faces))``
+        marker_names: ``{mark_id: name}`` mapping.
     """
-    if quality_kwargs is None:
-        quality_kwargs = dict(order=1, mindihedral=20, minratio=1, epsilon=1e-4)
-        # quality_kwargs = dict(order=1)
+    gmsh.initialize()
+    gmsh.model.add("mesh_3d")
 
-    # ------------------------------------------------------------------
-    # 1. Assign markers and merge surfaces
-    # ------------------------------------------------------------------
-    surfaces, dist_req_surfaces, holes = [], [], []
-    marker_names = {0: "Normal"}
-    all_surface_centers, all_surface_markers = [], []
-
-    for i, facet in enumerate(coords):
-        if facet.real_face:
-            mark_id = i + 1
-            marker_names[mark_id] = facet.name
-
-            surf = facet.surface.copy()
-            # Tag each face with its marker
-            n_cells = surf.n_cells
-            surf.cell_data["marker"] = np.full(n_cells, mark_id)
-
-            surfaces.append(surf)
-
-            # Collect hole points
-            if facet.hole:
-                holes.extend(facet.hole)
-
-            # Collect face centers + markers for later boundary marker lookup
-            centers = surf.cell_centers().points
-            all_surface_centers.append(centers)
-            all_surface_markers.append(np.full(len(centers), mark_id))
-
-        # Collect surfaces used for distance-based refinement  (analogous to 2D dist_req)
-        if facet.dist_req:
-            dist_req_surfaces.append(facet)
-
-    if not surfaces:
-        raise ValueError("No real_face surfaces provided.")
-
-    merged_surface = pv.merge(surfaces).clean()
-
-    if all_surface_centers:
-        all_surface_centers = np.vstack(all_surface_centers)
-        all_surface_markers = np.concatenate(all_surface_markers)
-    else:
-        all_surface_centers = np.zeros((0, 3))
-        all_surface_markers = np.array([], dtype=int)
-
-    # ------------------------------------------------------------------
-    # 2. Build background mesh for distance-based refinement (if any dist_req surfaces)
-    # ------------------------------------------------------------------
-    bgmesh = None
-    if dist_req_surfaces:
-        bgmesh = _build_refinement_bgmesh(merged_surface, dist_req_surfaces, mesh_props)
-
-    # ------------------------------------------------------------------
-    # 3. Build switches and tetrahedralize
-    # ------------------------------------------------------------------
-    tet = tetgen.TetGen(merged_surface)
-    for hole_pt in holes:
-        tet.add_hole(hole_pt)
-
-    # Suppress C-level stdout from tetgen
-    stdout_fd = os.dup(1)
-    try:
-        switches = _build_switches(mesh_props, quality_kwargs)
-        print(f'{switches = }')
-        with open(os.devnull, "w") as devnull:
-            os.dup2(devnull.fileno(), 1)
-            # tet.tetrahedralize(switches=switches, bgmesh=bgmesh)
-            tet.tetrahedralize(bgmesh=bgmesh, **quality_kwargs)
-
-    finally:
-        os.dup2(stdout_fd, 1)
-        os.close(stdout_fd)
-
-    grid = tet.grid
-
-    # Keep only tetrahedral cells
-    grid = grid.extract_cells(grid.celltypes == pv.CellType.TETRA).clean()
-
-    # ------------------------------------------------------------------
-    # 4. Extract mesh data
-    # ------------------------------------------------------------------
-    points = np.array(grid.points)
-    # Get tetrahedra connectivity: grid.cells is a flat array [4, v0, v1, v2, 3, 4, ...]
-    cell_conn = grid.cells.reshape(-1, 5)  # each row: [4, v0, v1, v2, v3]
-    tetra = cell_conn[:, 1:].astype(np.int64)
-
-    int_faces, bound_faces, _ = _extract_faces_from_tets(tetra)
-
-    # Assign markers to boundary faces
-    face_markers = _assign_boundary_markers(
-        points, bound_faces, all_surface_centers, all_surface_markers
+    # -- 1. Geometry ----------------------------------------------------------
+    h_min, h_max = _set_mesh_options(mesh_props)
+    domain_info, hole_info, marker_names, other_faces = _build_occ(coords)
+    boundary_tags, dist_req_tags, final_vols = _fragment_and_remove(
+        domain_info, hole_info, other_faces,
     )
+    _assign_physical_groups(boundary_tags, marker_names, final_vols)
 
-    mesh_specs = (
+    # -- 2. Refinement --------------------------------------------------------
+    _setup_distance_field(dist_req_tags, h_min, h_max, mesh_props.lengthscale)
+
+    # -- 3. Mesh generation ---------------------------------------------------
+    gmsh.model.mesh.generate(3)
+    print_gmsh_quality_metrics()
+
+    # -- 4. Extract data ------------------------------------------------------
+    points, nodeId_to_idx, tetra, int_faces, bound_faces = _extract_mesh_entities()
+    face_markers = _build_face_markers(bound_faces, nodeId_to_idx)
+
+    gmsh.finalize()
+    return (
         (points, tetra),
         (None, face_markers),
         (int_faces, bound_faces),
-    )
-
-    return mesh_specs, marker_names
-
+    ), marker_names

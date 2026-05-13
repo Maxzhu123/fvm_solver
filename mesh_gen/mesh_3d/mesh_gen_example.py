@@ -31,7 +31,7 @@ def cube_sphere_example():
     from collections import Counter
 
     print("=== Cube-with-sphere-hole mesh ===")
-    points, tetra, (int_faces, bound_faces), face_tag = gen_mesh_cube_sphere(volume=(0.2, 0.2), cell_lnscale=0.5)
+    points, tetra, (int_faces, bound_faces), face_tag = gen_mesh_cube_sphere(volume=(0.05, 0.2), cell_lnscale=0.2)
     print(f"  Points: {points.shape[0]}, Tets: {tetra.shape[0]}")
     print(f"  Interior faces: {int_faces.shape[0]}, Boundary faces: {bound_faces.shape[0]}")
     print(f"  Boundary tags: {Counter(face_tag)}")
@@ -52,8 +52,8 @@ def main():
     #
     # plot_clip(grid_cube_sphere)
     #
-    plot_interactive(grid_cube_sphere)
-
+    # plot_interactive(grid_cube_sphere)
+#
 
 
 if __name__ == "__main__":

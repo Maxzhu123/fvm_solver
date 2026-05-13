@@ -22,7 +22,6 @@ def gen_mesh_cube_sphere(volume, cell_lnscale=2.0):
     hole_radius = 0.45
     hole_center = np.array([0.0, 0.0, 0.0])
 
-
     min_vol, max_vol = volume
     mesh_lnscale = min_vol**(1/3)
 
@@ -38,7 +37,7 @@ def gen_mesh_cube_sphere(volume, cell_lnscale=2.0):
         ),
         Sphere3D(
             center=hole_center, radius=hole_radius,
-            hole=True, dist_req=True, mesh_lnscale=mesh_lnscale,
+            hole=True, dist_req=True, 
             name="NavierWall",
         ),
     ]

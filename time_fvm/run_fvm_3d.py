@@ -14,12 +14,6 @@ from time_fvm.config_fvm_3d import ConfigEllipse
 
 def generate_mesh(cfg: ConfigFVM):
     c_print(f'Creating new mesh for {cfg.problem_setup}', "green")
-    # if cfg.problem_setup == "nozzle":
-    #     mesh_stuff = gen_mesh_nozzle(areas=[cfg.min_A, cfg.max_A], cell_lnscale=cfg.lnscale)
-    # elif cfg.problem_setup == "ellipse":
-    #     mesh_stuff = gen_rand_mesh(areas=[cfg.min_A, cfg.max_A], cell_lnscale=cfg.lnscale)
-    # else:
-    #     raise ValueError(f'Unknown mode {cfg.problem_setup}')
     mesh_stuff = gen_mesh_cube_sphere(volume=[0.05, 0.1], cell_lnscale=cfg.lnscale)
     Xs, tet_idx, (int_edgs, bound_facet), facet_tag = mesh_stuff
 
@@ -77,7 +71,7 @@ def main():
     np.random.seed(1)
     torch.manual_seed(1)
 
-    new_mesh = False
+    new_mesh = True
 
     cfg: ConfigFVM = ConfigEllipse()
     phy_setup = FluidConstitution3D(cfg, dim=3)
