@@ -2,7 +2,6 @@ from typing import TYPE_CHECKING
 from cprint import c_print
 import torch
 from abc import ABC, abstractmethod
-from matplotlib import pyplot as plt
 import time
 
 from time_fvm.ds_saving.saving import Saver
@@ -12,7 +11,7 @@ if TYPE_CHECKING:
 
 
 class FVMCells:
-    state: torch.Tensor  # shape = (n_cells, N_component)
+    state: torch.Tensor  # shape = (n_cells, n_comp)
     """ State stored as: [momentum_x, momenum_y, density, energy] """
     def __init__(self, n_cells, n_comp, phys_setup: FluidConstitution, init_val=None, device="cpu"):
         self.device = device

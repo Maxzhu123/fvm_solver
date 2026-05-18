@@ -11,9 +11,9 @@ class BCMode(Enum):
 
 @dataclass
 class ConfigFVM(ABC):
-    device: str = "cpu"
+    device: str = "cuda"
     compile: bool = True
-    profile: bool = False         # Used for profiling code.
+    profile: bool = True         # Used for profiling code.
 
     problem_setup: str = None    # {ellipse, nozzle}
     n_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
@@ -96,8 +96,8 @@ class ConfigEllipse(ConfigFVM):
     n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
-    min_A: float = 10e-5
-    max_A: float = 30e-5
+    min_A: float = 1e-5
+    max_A: float = 1e-5
     lnscale: float = 0.25
 
     # Save configuration

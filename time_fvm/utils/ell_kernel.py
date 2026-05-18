@@ -231,7 +231,7 @@ def csr_to_ell(csr: torch.Tensor, K: int | None = None):
     assert csr.layout == torch.sparse_csr, "Input must be a sparse CSR tensor"
 
     crow = csr.crow_indices()
-    col = csr.col_indices()
+    col = csr.col_indices().to(torch.int32)
     val = csr.values()
 
     M = csr.shape[0]
@@ -243,7 +243,7 @@ def csr_to_ell(csr: torch.Tensor, K: int | None = None):
     if torch.any(nnz_per_row > K):
         raise ValueError("Some rows have more nonzeros than K")
 
-    ell_cols = torch.zeros((M, K), device=col.device, dtype=col.dtype)
+    ell_cols = torch.zeros((M, K), device=col.device, dtype=torch.int32)
     ell_vals = torch.zeros((M, K), device=val.device, dtype=val.dtype)
 
     for k in range(K):

@@ -39,6 +39,7 @@ class MeshCache:
     cell_facet_signs: torch.Tensor      # (3 * n_cells)  flattened
     cell_to_facet: torch.Tensor         # (3 * n_cells)  flattened
     cent_to_facet_disp: torch.Tensor    # (n_cells, 3, dim, 1)
+    neigh_combine: torch.Tensor     # (n_cells, 2)
 
     # BC attributes
     bc_facet_mask: torch.Tensor     # (n_facets)
@@ -49,7 +50,6 @@ class MeshCache:
 
     # Calculations
     G_mats: SPM                     # sparse SPM (dim*n_cells, n_cells + n_facets_bc)
-    neigh_combine: torch.Tensor     # (n_cells, 2)
     A_face_grad: SPM                # sparse SPM (n_facets*n_comp, n_cells*n_comp)
     b_face_grad: torch.Tensor       # (n_facets*n_comp,)
     flux_mat: SPM                   # (n_cells, n_facets)
@@ -68,15 +68,16 @@ class MeshCache:
         self.facet_to_cell_main = mesh_setup.facet_to_cell_main.to(device)
         self.cent_to_facet_disp = mesh_setup.cent_to_facet_disp.to(device).unsqueeze(-1)
         self.cell_facet_signs = (-mesh_setup.cell_facet_signs + 1 / 2).to(torch.int32).view(self.n_neigh * self.n_cells).to(device)    # From {-1, 1} to {0, 1}
-        self.cell_to_facet = mesh_setup.cell_to_facet.view(self.n_neigh * self.n_cells).to(device)
+        self.cell_to_facet = mesh_setup.cell_to_facet.view(self.n_neigh * self.n_cells).int().to(device)
         self.facet_to_cell_bc = mesh_setup.facet_to_cell_bc.to(device)
         self.bc_facet_mask = mesh_setup.bc_facet_mask.to(device)
 
+        # Least squares gradient compute
         (cell_disps, facet_dists_bc, G_mats, neigh_combine) = mesh_setup.cell_grad_stuff
         self.facet_dists_bc = facet_dists_bc.to(device).unsqueeze(-1).expand(-1, n_comp)
         G_mats = interleave_sparse_rows(G_mats) # Want output to be easily reshaped.
         self.G_mats = to_sparse(G_mats, device)
-        self.neigh_combine = neigh_combine.to(device)
+        self.neigh_combine = neigh_combine.to(device).int()
 
         self.cell_disps = cell_disps.to(device)
         self.normals = mesh_setup.normals.to(device)
@@ -384,24 +385,23 @@ class FacetCalc:
         self.grad_T_n = dFdn_correct[:, -1]      # shape = [n_facets]
 
     def _limit_face_vals(self, Us, Us_cell_facet, cell_grads):
-        """ Limited B-J scheme for cell to face interpolation.
+        """ Limited B-J scheme for cell to facet interpolation.
         """
         mesh = self.mesh
         U_cent = Us.unsqueeze(1)        # shape = [n_cells, 1, n_comp]
-        Us_neigh = Us_cell_facet[mesh.neigh_combine]  # shape = [n_cells, neigh=3, n_comp]
+        Us_neigh = Us_cell_facet[mesh.neigh_combine]  # shape = [n_cells, neigh, n_comp]
 
         # Uncorrected update
-        grads = cell_grads.unsqueeze(1)     # shape = [n_cells, 1, dims=2, n_comp]
-        dU = (grads * mesh.cent_to_facet_disp).sum(dim=2)  # shape = [n_cells, neigh=3, n_comp]
+        grads = cell_grads.unsqueeze(1)     # shape = [n_cells, 1, dim, n_comp]
+        dU = (grads * mesh.cent_to_facet_disp).sum(dim=2)  # shape = [n_cells, neigh, n_comp]
 
         # Select limiting neighbor values and compute gradient limiter
         U_cent_neigh = torch.cat([U_cent, Us_neigh], dim=1)             # shape = [n_cells, 4, n_comp]
-        U_upper = torch.amax(U_cent_neigh, dim=1, keepdim=True) - U_cent      # shape = [n_cells, 1, n_comp]
-        U_lower = torch.amin(U_cent_neigh, dim=1, keepdim=True) - U_cent
+        U_min, U_max = torch.aminmax(U_cent_neigh, dim=1, keepdim=True) # shape = [n_cells, neigh, n_comp]
+        numerator = torch.where(dU > 0, U_max, U_min) - U_cent
 
-        numerator = torch.where(dU > 0, U_upper, U_lower)           # shape = [n_cells, neigh=3, n_comp]
-        phi_lim = self.slope_limiter.limit(numerator, dU)           # shape = [n_cells, neigh=3, n_comp]
-        Us_face = torch.addcmul(U_cent, dU, phi_lim)                # shape = [n_cells, neigh=3, n_comp]
+        phi_lim = self.slope_limiter.limit(numerator, dU)               # shape = [n_cells, neigh, n_comp]
+        Us_face = torch.addcmul(U_cent, dU, phi_lim)                    # shape = [n_cells, neigh, n_comp]
 
         return Us_face, phi_lim
 

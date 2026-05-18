@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from time_fvm.fvm_equation import FVMEquation
     from time_fvm.config_fvm import ConfigFVM
 
+
 def get_solver(equation: FVMEquation, cfg: ConfigFVM) -> TSolver:
     cells: FVMCells = equation.cells
 
@@ -26,6 +27,7 @@ def get_solver(equation: FVMEquation, cfg: ConfigFVM) -> TSolver:
         return Euler(cells, equation, cfg)
     else:
         raise NotImplementedError("Invalid solver.")
+
 
 class Adaptive:
     dt: torch.Tensor
@@ -402,7 +404,7 @@ class Euler(TSolver):
     def _step(self, t):
         """U^{i+1} = U^i + dt * f(U^i)"""
 
-        dUdt = self.eq.forward(self.cells.get_values()[0], self.dt, t=t)
+        dUdt = self.eq.forward(self.cells.get_values()[0])
         U_i_1 = self.cells.state + self.dt * dUdt
 
         return U_i_1

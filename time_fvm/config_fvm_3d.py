@@ -36,8 +36,8 @@ class ConfigEllipse(ConfigFVM):
     n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
-    min_A: float = 5e-3
-    max_A: float = 3e-2
+    min_A: float = 1e-3
+    max_A: float = 1e-2
     lnscale: float = 0.5
 
     # Save configuration
@@ -48,7 +48,7 @@ class ConfigEllipse(ConfigFVM):
 
     # Physical parameters
     T_0: float = 100        # Reference temperature
-    viscosity: float = 10e-4     # At reference temp
+    viscosity: float = 5e-4     # At reference temp
     visc_bulk: float = 5e-4
     thermal_cond: float = 1e-6
     S_const: float = 110.4       # Sutherland's constant
