@@ -10,11 +10,12 @@ from time_fvm.mesh_utils.fvm_mesh import FVMMesh3D
 from time_fvm.fvm_equation import FVMEquation, FluidConstitution3D, FluidConstitution
 from time_fvm.config_fvm import ConfigFVM
 from time_fvm.config_fvm_3d import ConfigEllipse
+from time_fvm.time_solvers.integrators import get_solver
 
 
 def generate_mesh(cfg: ConfigFVM):
     c_print(f'Creating new mesh for {cfg.problem_setup}', "green")
-    mesh_stuff = gen_mesh_cube_sphere(volume=[0.05, 0.1], cell_lnscale=cfg.lnscale)
+    mesh_stuff = gen_mesh_cube_sphere(volume=[cfg.min_A, cfg.max_A], cell_lnscale=cfg.lnscale)
     Xs, tet_idx, (int_edgs, bound_facet), facet_tag = mesh_stuff
 
     Xs = torch.from_numpy(Xs).float()
@@ -53,7 +54,7 @@ def init_conds_3D(mesh: FVMMesh3D, edge_tag, bound_edgs, phy_setup: FluidConstit
     # x, y = centroids[:, 0], centroids[:, 1]
     n_cells = mesh.n_cells
     prims_init = torch.zeros([n_cells, 1]).repeat(1, 5)
-    prims_init[:, 0] = v_in
+    prims_init[:, 0] = v_in + 0.1
     prims_init[:, 1] = 0
     prims_init[:, 2] = 0
     prims_init[:, 3] = rho_in
@@ -93,11 +94,12 @@ def main():
 
     # Set up initial conditions.
     if cfg.problem_setup == "ellipse":
-        bc_tags, us_init = init_conds_3D(mesh, edge_tag, bound_edgs, phy_setup, cfg)
+        bc_tags, Us_init = init_conds_3D(mesh, edge_tag, bound_edgs, phy_setup, cfg)
     else:
         raise ValueError(f'Unknown mode {cfg.problem_setup}')
 
-    solver = FVMEquation(cfg, phy_setup, mesh, cfg.N_comp, bc_tags, us_init=us_init)
+    fvm_setup = FVMEquation(cfg, phy_setup, mesh, bc_tags, Us_init=Us_init)
+    solver = get_solver(fvm_setup, cfg)
     solver.solve()
 
 

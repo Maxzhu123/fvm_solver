@@ -43,13 +43,13 @@ def plot_points(Xs, values, lims=None, title="", show_index=False, Xlims=None):
     plt.show()
 
 
-def plot_interp_cell(Xs, values, triangles, Xlims=None, title="", edgecolors="none"):
+def plot_interp_cell(Xs, triangles, values, Xlims=None, title="", edgecolors="none"):
     """
     Xs: Tensor of vertex coordinates (N x 2)
+    triangles: Tensor of triangle vertex indices (M x 3).
     values: Tensor of face-based values.
             If values is 1D, it's assumed to be defined on the triangulation faces.
             If 2D, each row is treated as a separate batch. shape = (B, M)
-    triangles: Tensor of triangle vertex indices (M x 3).
     Xlims: Optional tuple ((xmin, xmax), (ymin, ymax)) to set the plot limits.
     title: Plot title.
     """

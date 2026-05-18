@@ -7,7 +7,9 @@ if TYPE_CHECKING:
     from time_fvm.fvm_equation import FVMEquation
     from time_fvm.config_fvm import ConfigFVM
 
-def get_solver(cells: FVMCells, equation: FVMEquation, cfg: ConfigFVM) -> TSolver:
+def get_solver(equation: FVMEquation, cfg: ConfigFVM) -> TSolver:
+    cells: FVMCells = equation.cells
+
     name = cfg.solver_name
     extra_str = cfg.solver_extra
     if name == "RK3_SSP4":
@@ -57,7 +59,7 @@ class Adaptive:
         factor = 0.9 * E ** (-1 / self.order)
         alpha = torch.where(E > 1, self.alphas[0], self.alphas[1])
 
-        scale_factor = torch.addcmul(alpha, (1-alpha), factor)
+        scale_factor = torch.addcmul(alpha, 1-alpha, factor)
         self.dt.mul_(scale_factor)
 
 

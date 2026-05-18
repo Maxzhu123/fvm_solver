@@ -56,12 +56,12 @@ class TSolver(ABC):
         self.cfg = cfg
         self.device = cfg.device
         self.n_steps = cfg.n_iter
+        self.print_i, self.plot_t, self.save_t  = cfg.print_i, cfg.plot_t, cfg.save_t
+
         self.cells = cells
         self.eq = eq
-        self.print_i = cfg.print_i
-        self.plot_t = cfg.plot_t
-        self.save_t = cfg.save_t
         self.saver = Saver(self.eq.E_props)
+        self.dim = eq.dim
 
         # Initialise dt from config. Adaptive solvers can overwrite this value in the step function.
         self.dt = torch.tensor(cfg.dt, device=self.device)
@@ -96,18 +96,12 @@ class TSolver(ABC):
 
             if t >= next_plot_t:
                 next_plot_t = t + self.plot_t
-                c_print(f'{t = :.5g}', color="bright_yellow")
+                c_print(f'Plotting timestep {t = :.5g}', color="bright_yellow")
 
-                primatives = self.cells.get_values()[0]
-                Xlims = None # [[3.1, 3.4], [-1.8, -1.6]] #, [(0, 1), [0, 0.5]]  #
-                #
-                titles = ["Vx", "Vy", "rho", "T"]
-                titles = [f'{title} at {t=:4g}' for title in titles]
-                self.eq.plot_interp(primatives[:, :], title=titles, Xlims=Xlims)
-
-                if torch.any(torch.isnan(primatives)):
-                    print("Nan in primatives")
-                    raise ValueError("Nan detected in primatives")
+                if self.dim == 2:
+                    self._plot_2d(t)
+                else:
+                    self._plot_3d(t)
 
             if t >= next_save_t:
                 next_save_t = t + self.save_t
@@ -115,15 +109,33 @@ class TSolver(ABC):
                 primatives = self.cells.get_values()[0]
                 self.saver.save(t, self.eq.E_props, primatives)
 
+    def _plot_2d(self, t):
+        primatives = self.cells.get_values()[0]
+        assert not torch.any(torch.isnan(primatives)), "Nan detected in solver solution"
+        Xlims = None
+
+        titles = ["Vx", "Vy", "rho", "T"]
+        titles = [f'{title} at {t=:4g}' for title in titles]
+        self.eq.plot_interp(primatives, title=titles, Xlims=Xlims)
+
+    def _plot_3d(self, t):
+        primatives = self.cells.get_values()[0]
+        assert not torch.any(torch.isnan(primatives)), "Nan detected in solver solution"
+        Xlims = None
+
+        titles = ["Vx", "Vy", "rho", "T"]
+        titles = [f'{title} at {t=:4g}' for title in titles]
+        self.eq.plot_interp_3d(primatives, title=titles, Xlims=Xlims)
+
     @torch.inference_mode()
     def solve(self):
-        profile = self.cfg.profile
-        if profile:
+        if self.cfg.profile:
             self._solve_profile()
         else:
             self._solve()
 
     def _solve_step(self, t):
+        """ Run a single timestep. Used for compile. """
         new_Us = self._step(t)
         self.cells.update_cells(new_Us)
 

@@ -4,7 +4,7 @@ import os
 import torch
 from cprint import c_print
 
-from time_fvm.utils.plotting import plot_interp_cell
+from time_fvm.utils.plot_2d import plot_interp_cell
 from time_fvm.fvm_stepping.facet_process import FacetCalc
 from base_cfg import ARTEFACT_DIR
 
@@ -26,10 +26,9 @@ class Saver:
         vertices = fvm.vertices.cpu().numpy()    # shape = [n_vertices, 2]
         edges = fvm.facets.cpu().numpy()          # shape = [n_edges, 2]
         # Mesh property: BC edges
-        bc_edge_mask = mesh.bc_facet_mask.cpu().numpy()                # shape = [n_edges]
-        bc_cpu_mask = fvm.bc_facet_mask                      # CPU boolean mask for indexing CPU tensors
-        bc_midpoints = fvm.midpoints[bc_cpu_mask].numpy()     # shape = [n_bc_edge, 2]
-        bc_normals = fvm.normals[bc_cpu_mask].numpy()         # shape = [n_bc_edge, 2]
+        bc_edge_mask = fvm.bc_facet_mask.cpu().numpy()                # shape = [n_edges]
+        bc_midpoints = fvm.midpoints[bc_edge_mask].numpy()     # shape = [n_bc_edge, 2]
+        bc_normals = fvm.normals[bc_edge_mask].numpy()         # shape = [n_bc_edge, 2]
         bc_type_str = E_props.bc_type_str                       # shape = [n_bc_edge]
         mesh_props = {"triangles": triangles, "vertices": vertices, "centroids": centroids, "edges": edges,
                       "bc_midpoints": bc_midpoints, "bc_normals": bc_normals,
@@ -119,7 +118,7 @@ def main(save_dir='/home/maccyz/Documents/FVM_solver/artefacts/fvm_saves/03-29_0
         t, cell_primatives, bc_primatives = load_step(file_path)
 
         print(f"Time: {t:.4g}")
-        plot_interp_cell(mesh_props['vertices'], cell_primatives.T[:2], mesh_props['triangles'], title=f't={t:.3g}')
+        plot_interp_cell(mesh_props['vertices'], mesh_props['triangles'], cell_primatives.T[:2], title=f't={t:.3g}')
 
 
 if __name__ == '__main__':

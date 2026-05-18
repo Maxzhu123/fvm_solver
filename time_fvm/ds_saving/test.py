@@ -6,7 +6,7 @@ from cprint import c_print
 
 from base_cfg import BASE_DIR
 from time_fvm.ds_saving.downsampling import adaptive_remesh
-from time_fvm.utils.plotting import plot_interp_cell, plot_interp_vertex
+from time_fvm.utils.plot_2d import plot_interp_cell, plot_interp_vertex
 
 
 def load_step(file_path):
@@ -55,7 +55,7 @@ def main(save_name=f'01-14_21-08-43'):
         triangles = torch.from_numpy(triangles).long()
 
         print(f'{vertices.shape = }, {triangles.shape = }, {cell_primitives.shape = }')
-        plot_interp_cell(vertices, cell_primitives.T, triangles, title='Adaptively remeshed')  # , edgecolors="k")
+        plot_interp_cell(vertices, triangles, cell_primitives.T, title='Adaptively remeshed')  # , edgecolors="k")
 
 
 if __name__ == '__main__':

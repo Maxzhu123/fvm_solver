@@ -16,7 +16,7 @@ class ConfigFVM(ABC):
     profile: bool = False         # Used for profiling code.
 
     problem_setup: str = None    # {ellipse, nozzle}
-    N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
+    n_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
 
     # Temporal solver parameters
     solver_name: str = "Butcher_adapt"

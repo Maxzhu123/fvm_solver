@@ -3,10 +3,9 @@ import torch
 from abc import ABC, abstractmethod
 from cprint import c_print
 
-from time_fvm.utils.plotting import plot_points, plot_interp_cell, plot_edges
+from time_fvm.utils.plot_2d import plot_points, plot_interp_cell, plot_edges
 from time_fvm.fvm_stepping.facet_process import FacetCalc
 from time_fvm.time_solvers.t_solvers import FVMCells
-from time_fvm.time_solvers.integrators import get_solver
 if TYPE_CHECKING:
     from time_fvm.mesh_utils.fvm_mesh import FVMMesh
     from config_fvm import ConfigFVM
@@ -30,6 +29,7 @@ class FluidConstitution(ABC):
         self.C_v = cfg.C_v
         self.gamma = cfg.gamma
         self.R = self.C_v * (cfg.gamma - 1)
+        self.thermal_cond = cfg.thermal_cond
 
     def state_to_primative(self, state: torch.Tensor):
         """ Convert from conserved quantities (momentum, rho, energy) to primitives (velocity, rho, T) """
@@ -261,11 +261,12 @@ class Heating(FVMFacetFlux):
         Thermal conductivity term:  div(grad(T)) = sum(grad(T) * n_f)
     """
     E_props: FacetCalc
-    def __init__(self, E_props: FacetCalc, stress_calc:FluidConstitution, cfg: ConfigFVM, device="cpu"):
+    def __init__(self, E_props: FacetCalc, stress_calc: FluidConstitution, device="cpu"):
         self.E_props = E_props
         self.stress_calc = stress_calc
         self.dim = E_props.dim
-        self.kappa = cfg.thermal_cond
+
+        self.kappa = stress_calc.thermal_cond
         self.device = device
 
     def facet_fluxes(self, fluxes=None):
@@ -368,39 +369,35 @@ class KTDiffusion(FVMFacetFlux):
 
 
 class FVMEquation:
+    """ Main class for FVM simulation. Combines FVM calculations and physical setup. """
     mesh: FVMMesh
     E_props: FacetCalc
     cells: FVMCells
-    n_comp: int
 
-    def __init__(self, cfg: ConfigFVM, phy_setup: FluidConstitution, mesh: FVMMesh, n_comp, bc_tag, us_init=None):
+    def __init__(self, cfg: ConfigFVM, phy_setup: FluidConstitution, mesh: FVMMesh, bc_tag, Us_init=None):
         self.cfg = cfg
         self.phy_setup = phy_setup
         self.device = cfg.device
         self.mesh = mesh
-        self.n_comp = n_comp
+        self.dim = mesh.dim
 
         device = self.device
 
         # Physical parameters
+        n_comp = cfg.n_comp
         E_props = FacetCalc(self.phy_setup, cfg, mesh, n_comp, bc_tag, device=device)
-        self.cells = FVMCells(mesh.n_cells, n_comp, init_val=us_init, phys_setup=self.phy_setup, device=device)
+        self.cells = FVMCells(mesh.n_cells, n_comp, init_val=Us_init, phys_setup=self.phy_setup, device=device)
         self.flux_mat = E_props.mesh.flux_mat
         self.E_props = E_props
 
         self.P_force = PressureForce(E_props, self.phy_setup, device=device)
         self.U_advect = Adevction(E_props, self.phy_setup, device=device)
         self.U_visc = Viscosity(E_props, self.phy_setup, device=device)
-        self.Heat = Heating(E_props, self.phy_setup, cfg=cfg, device=device)
+        self.Heat = Heating(E_props, self.phy_setup, device=device)
         self.KT_diff = KTDiffusion(E_props, cfg.v_factor, self.phy_setup, device=device)
-
-        self.t_solver = get_solver(self.cells, self, cfg)
 
         E_props.clear_temp()
         c_print("Done FVMEquation", color="bright_magenta")
-
-    def solve(self):
-        self.t_solver.solve()
 
     def forward(self, primatives):
         """ primatives.shape = (n_cells, n_comp) """
@@ -439,5 +436,9 @@ class FVMEquation:
     def plot_cells(self, values, title="Cell Values", show_index=False, lims=None, Xlims=None):
         plot_points(self.mesh.centroids.cpu(), values.T, show_index=show_index, title=title, lims=lims, Xlims=Xlims)
 
-    def plot_interp(self, values, title="Cell Values", Xlims=None, resolution=2000):
-        plot_interp_cell(self.mesh.vertices, values.T, self.mesh.cells, title=title, Xlims=Xlims)
+    def plot_interp(self, values, title="Cell Values", Xlims=None):
+        plot_interp_cell(self.mesh.vertices, self.mesh.cells, values.T, Xlims=Xlims, title=title)
+
+    def plot_interp_3d(self, values, title="Cell Values", Xlims=None):
+        from time_fvm.utils.plot_3d import plot_streamlines
+        plot_streamlines(self.mesh.vertices, self.mesh.cells, values[:, :3])

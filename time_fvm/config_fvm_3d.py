@@ -28,7 +28,7 @@ class EllipseInlet(ConfigBC):
 
 @dataclass
 class ConfigEllipse(ConfigFVM):
-    N_comp: int = 5     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
+    n_comp: int = 5     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
 
     problem_setup: str = "ellipse"    # {ellipse, nozzle}
 
@@ -37,8 +37,8 @@ class ConfigEllipse(ConfigFVM):
     n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
-    min_A: float = 0.05e-3
-    max_A: float = 0.05e-3
+    min_A: float = 1e-2
+    max_A: float = 5e-2
     lnscale: float = 2
 
     # Save configuration
@@ -49,8 +49,8 @@ class ConfigEllipse(ConfigFVM):
 
     # Physical parameters
     T_0: float = 100        # Reference temperature
-    viscosity: float = 1e-6     # At reference temp
-    visc_bulk: float = 1e-4
+    viscosity: float = 10e-4     # At reference temp
+    visc_bulk: float = 5e-4
     thermal_cond: float = 1e-6
     S_const: float = 110.4       # Sutherland's constant
     gamma: float = 1.2  # Ratio of specific heats

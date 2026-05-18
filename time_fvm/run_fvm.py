@@ -9,6 +9,7 @@ from time_fvm.mesh_utils.mesh_store import Facet
 from time_fvm.mesh_utils.fvm_mesh import FVMMesh2D
 from time_fvm.fvm_equation import FVMEquation, FluidConstitution2D, FluidConstitution
 from time_fvm.config_fvm import ConfigFVM, ConfigNozzle, ConfigEllipse
+from time_fvm.time_solvers.integrators import get_solver
 
 
 def generate_mesh(cfg: ConfigFVM):
@@ -140,15 +141,17 @@ def main():
 
     # Set up initial conditions.
     if cfg.problem_setup == "ellipse":
-        bc_tags, us_init = init_conds_ellipses(mesh, edge_tag, bound_edgs, phy_setup, cfg)
+        bc_tags, Us_init = init_conds_ellipses(mesh, edge_tag, bound_edgs, phy_setup, cfg)
     elif cfg.problem_setup == "nozzle":
-        bc_tags, us_init = init_conds_nozzle(mesh, edge_tag, bound_edgs, phy_setup, cfg)
+        bc_tags, Us_init = init_conds_nozzle(mesh, edge_tag, bound_edgs, phy_setup, cfg)
     else:
         raise ValueError(f'Unknown mode {cfg.problem_setup}')
 
-    solver = FVMEquation(cfg, phy_setup, mesh, cfg.N_comp, bc_tags, us_init=us_init)
+    # solver = FVMEquation(cfg, phy_setup, mesh, cfg.N_comp, bc_tags, us_init=us_init)
+    # solver.solve()
+    fvm_setup = FVMEquation(cfg, phy_setup, mesh, bc_tags, Us_init=Us_init)
+    solver = get_solver(fvm_setup, cfg)
     solver.solve()
-
 
 if __name__ == "__main__":
     # PYTHONPATH=/home/maccyz/Documents/FVM_solver:/home/maccyz/Documents/FVM_solver/tetgen:/home/maccyz/Documents/FVM_solver/tetgen/src
