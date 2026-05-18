@@ -327,8 +327,8 @@ def create_mesh_3d(coords: list, mesh_props: MeshProps):
     _setup_distance_field(dist_req_tags, h_min, h_max, mesh_props.lengthscale)
 
     # -- 3. Mesh generation ---------------------------------------------------
-    gmsh.model.mesh.generate(3)
-    print_gmsh_quality_metrics()
+    gmsh.model.mesh.generate(dim=3)
+    # print_gmsh_quality_metrics()
 
     # -- 4. Extract data ------------------------------------------------------
     points, nodeId_to_idx, tetra, int_faces, bound_faces = _extract_mesh_entities()

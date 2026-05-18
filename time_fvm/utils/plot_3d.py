@@ -79,7 +79,8 @@ def plot_interp_cell_3d(points: Tensor, cells: Tensor, cell_values: Tensor, *,
 
 
 def plot_streamlines(points: Tensor, cells: Tensor, velocity: Tensor, *,
-    opacity=0.3, window_size=(900, 700)):
+                        scalar: Tensor=None, scalar_name="Speed",
+                        opacity=0.3, window_size=(900, 700)):
     """
     Plot 3D streamlines in PyVista for a given velocity field.
 
@@ -91,12 +92,8 @@ def plot_streamlines(points: Tensor, cells: Tensor, velocity: Tensor, *,
         Cell connectivity. Each cell is a list of point indices.
     velocity : shape (n_cells, 3)
         Velocity vector field.
-    opacity : float
-        Opacity of the domain mesh.
-    window_size : tuple[int, int]
-        PyVista window size.
-    n_points : int
-        Number of seeding points for streamlines.
+    scalar: shape (n_cells, 1)
+        Extra scalar field to display.
     """
 
     mesh = create_unstructured_grid(points, cells)
@@ -104,8 +101,12 @@ def plot_streamlines(points: Tensor, cells: Tensor, velocity: Tensor, *,
     # Load velocity into mesh
     velocity = velocity.cpu().numpy()
     mesh.cell_data["velocity"] = velocity
+    if scalar is not None:
+        mesh.cell_data[scalar_name] = scalar.cpu().numpy()
+    else:
+        scalar_name = "Speed"
+        mesh.cell_data[scalar_name] = np.linalg.norm(velocity, axis=1)
     mesh_pt = mesh.cell_data_to_point_data()
-    mesh_pt.set_active_vectors("velocity")
 
     # Add streamlines
     seed = pv.Plane(
@@ -126,7 +127,7 @@ def plot_streamlines(points: Tensor, cells: Tensor, velocity: Tensor, *,
 
     plotter.add_mesh(
         stream,
-        scalars="velocity", scalar_bar_args={"title": "Speed"}
+        scalars=scalar_name, scalar_bar_args={"title": scalar_name}
     )
 
     plotter.add_axes()

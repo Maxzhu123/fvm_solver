@@ -43,8 +43,6 @@ def init_conds_3D(mesh: FVMMesh3D, edge_tag, bound_edgs, phy_setup: FluidConstit
         if e_tag == "NavierWall":
             bc_tags[bc_idx] = Facet([E.Dirich, E.Dirich, E.Dirich, E.Neuman, E.Neuman], [0., 0, 0, None, None], [None, None, None, 0, 0], tag=e_tag)
         elif e_tag == "Farfield":
-            bc_tags[bc_idx] = Facet([E.Inlet, E.Inlet, E.Inlet, E.Inlet, E.Inlet], tag=e_tag)
-        elif e_tag == "Right":
             bc_tags[bc_idx] = Facet([E.Farfield, E.Farfield, E.Farfield, E.Farfield, E.Farfield], tag=e_tag)
         else:
             raise ValueError(f'Unknown edge tag {e_tag}')

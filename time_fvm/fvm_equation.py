@@ -441,5 +441,8 @@ class FVMEquation:
     def plot_interp(self, values, title="Cell Values", Xlims=None):
         plot_interp_cell(self.mesh.vertices, self.mesh.cells, values.T, Xlims=Xlims, title=title)
 
-    def plot_interp_3d(self, values, Xlims=None):
-        plot_streamlines(self.mesh.vertices, self.mesh.cells, values[:, :3])
+    def plot_interp_3d(self, velocity, scalar=None, scalar_name=""):
+        """ velocity.shape [n_cells, 3]
+            scalar.shape [n_cells, 1]
+        """
+        plot_streamlines(self.mesh.vertices, self.mesh.cells, velocity, scalar=scalar, scalar_name=scalar_name)

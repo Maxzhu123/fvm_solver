@@ -121,9 +121,10 @@ class TSolver(ABC):
     def _plot_3d(self, t):
         primatives = self.cells.get_values()[0]
         assert not torch.any(torch.isnan(primatives)), "Nan detected in solver solution"
-        Xlims = None
 
-        self.eq.plot_interp_3d(primatives[:, :3], Xlims=Xlims)
+        Vs = primatives[:, :3]
+        T = primatives[:, 3]
+        self.eq.plot_interp_3d(Vs)#, scalar=T, scalar_name="Temperature")
 
     @torch.inference_mode()
     def solve(self):

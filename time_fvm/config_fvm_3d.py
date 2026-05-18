@@ -10,10 +10,9 @@ class EllipseFarfield(ConfigBC):
     mode: BCMode = BCMode.Characteristic
 
     # Farfield physical parameters
-    v_n_inf: float = -5.5
-    v_t_inf: float = 0
-    rho_inf: float = 1
-    T_inf: float = 100
+    v_inf = (.1, 0, 0)
+    rho_inf: float = 1.
+    T_inf: float = 100.
 
 
 @dataclass
@@ -37,9 +36,9 @@ class ConfigEllipse(ConfigFVM):
     n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
-    min_A: float = 1e-2
-    max_A: float = 5e-2
-    lnscale: float = 2
+    min_A: float = 5e-3
+    max_A: float = 3e-2
+    lnscale: float = 0.5
 
     # Save configuration
     plot_t: float = 0.025   # Time interval between plots
