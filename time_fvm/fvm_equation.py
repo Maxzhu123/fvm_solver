@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from cprint import c_print
 
 from time_fvm.utils.plot_2d import plot_points, plot_interp_cell, plot_edges
+from time_fvm.utils.plot_3d import plot_streamlines
+
 from time_fvm.fvm_stepping.facet_process import FacetCalc
 from time_fvm.time_solvers.t_solvers import FVMCells
 if TYPE_CHECKING:
@@ -439,6 +441,5 @@ class FVMEquation:
     def plot_interp(self, values, title="Cell Values", Xlims=None):
         plot_interp_cell(self.mesh.vertices, self.mesh.cells, values.T, Xlims=Xlims, title=title)
 
-    def plot_interp_3d(self, values, title="Cell Values", Xlims=None):
-        from time_fvm.utils.plot_3d import plot_streamlines
+    def plot_interp_3d(self, values, Xlims=None):
         plot_streamlines(self.mesh.vertices, self.mesh.cells, values[:, :3])

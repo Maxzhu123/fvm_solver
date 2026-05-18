@@ -33,8 +33,9 @@ def create_unstructured_grid(points: Tensor, cells: Tensor) -> pv.UnstructuredGr
 
     return mesh
 
+
 def plot_interp_cell_3d(points: Tensor, cells: Tensor, cell_values: Tensor, *,
-    cmap="viridis", show_edges=True, edge_color="black", scalar_bar_title="Cell value", opacity=0.5,
+    scalar_bar_title="Cell value", opacity=0.5,
     window_size=(900, 700)):
     """
     Plot a 3D mesh in PyVista where each cell has a scalar value.
@@ -47,14 +48,10 @@ def plot_interp_cell_3d(points: Tensor, cells: Tensor, cell_values: Tensor, *,
         Cell connectivity. Each cell is a list of point indices.
     cell_values : shape (n_cells)
         Scalar value for each cell.
-    cmap : str
-        Matplotlib colormap name.
-    show_edges : bool
-        Whether to draw mesh edges.
-    edge_color : str
-        Edge color.
     scalar_bar_title : str
         Label for the colorbar.
+    opacity : float
+        Opacity of the domain mesh.
     window_size : tuple[int, int]
         PyVista window size.
     """
@@ -72,10 +69,7 @@ def plot_interp_cell_3d(points: Tensor, cells: Tensor, cell_values: Tensor, *,
         mesh,
         scalars="values",
         preference="cell",
-        cmap=cmap,
         opacity=opacity,
-        show_edges=show_edges,
-        edge_color=edge_color,
         scalar_bar_args={"title": scalar_bar_title},
     )
 
@@ -83,9 +77,9 @@ def plot_interp_cell_3d(points: Tensor, cells: Tensor, cell_values: Tensor, *,
     plotter.show_grid()
     plotter.show()
 
+
 def plot_streamlines(points: Tensor, cells: Tensor, velocity: Tensor, *,
-    cmap="viridis", show_edges=True, edge_color="black", opacity=0.3,
-    window_size=(900, 700), n_points=100):
+    opacity=0.3, window_size=(900, 700)):
     """
     Plot 3D streamlines in PyVista for a given velocity field.
 
@@ -97,21 +91,12 @@ def plot_streamlines(points: Tensor, cells: Tensor, velocity: Tensor, *,
         Cell connectivity. Each cell is a list of point indices.
     velocity : shape (n_cells, 3)
         Velocity vector field.
-    cmap : str
-        Matplotlib colormap name.
-    show_edges : bool
-        Whether to draw mesh edges.
-    edge_color : str
-        Edge color.
-
     opacity : float
         Opacity of the domain mesh.
     window_size : tuple[int, int]
         PyVista window size.
     n_points : int
         Number of seeding points for streamlines.
-    tube_radius : float, optional
-        Radius of the streamlines tubes. If None, simple lines are drawn.
     """
 
     mesh = create_unstructured_grid(points, cells)
@@ -136,18 +121,12 @@ def plot_streamlines(points: Tensor, cells: Tensor, velocity: Tensor, *,
 
     plotter.add_mesh(
         mesh,
-        opacity=opacity,
-        show_edges=show_edges,
-        edge_color=edge_color,
-        color="white"
+        opacity=opacity, color="white"
     )
-
 
     plotter.add_mesh(
         stream,
-        scalars="velocity",
-        cmap=cmap,
-        scalar_bar_args={"title": "Speed"}
+        scalars="velocity", scalar_bar_args={"title": "Speed"}
     )
 
     plotter.add_axes()

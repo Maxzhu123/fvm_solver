@@ -123,9 +123,7 @@ class TSolver(ABC):
         assert not torch.any(torch.isnan(primatives)), "Nan detected in solver solution"
         Xlims = None
 
-        titles = ["Vx", "Vy", "rho", "T"]
-        titles = [f'{title} at {t=:4g}' for title in titles]
-        self.eq.plot_interp_3d(primatives, title=titles, Xlims=Xlims)
+        self.eq.plot_interp_3d(primatives[:, :3], Xlims=Xlims)
 
     @torch.inference_mode()
     def solve(self):
