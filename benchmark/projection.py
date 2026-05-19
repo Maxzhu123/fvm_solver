@@ -18,13 +18,15 @@ def run_projection(save_dict):
     U_face_all[cell_to_facet, cell_facet_signs] = Us_face
     U_face_all[bc_locations, bc_facet_side] = U_facet_bc
 
-    # Decompose components back
-    dim = 3
-    Vs_facet = U_face_all[:, :, :dim].contiguous()  # shape = [n_facets, facets=2, n_comp=dim]
-    rho_facet = U_face_all[:, :, dim].unsqueeze(-1).contiguous()  # shape = [n_facets, facets=2, dims=1]
-    T_facet = U_face_all[:, :, dim + 1].unsqueeze(-1).contiguous() if U_face_all.shape[-1] > dim + 1 else None # shape = [n_facets, facets=2, dims=1]
+    # # Decompose components back
+    # dim = 2
+    # Vs_facet = U_face_all[:, :, :dim].contiguous()  # shape = [n_facets, facets=2, n_comp=dim]
+    # rho_facet = U_face_all[:, :, dim].unsqueeze(-1).contiguous()  # shape = [n_facets, facets=2, dims=1]
+    # T_facet = U_face_all[:, :, dim + 1].unsqueeze(-1).contiguous() # shape = [n_facets, facets=2, dims=1]
+    U_face_mean = U_face_all.mean(dim=1)
 
-    return Vs_facet, rho_facet, T_facet
+    return U_face_mean
+    # return U_face_all
 
 def benchmark():
     # Load save variables

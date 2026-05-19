@@ -379,7 +379,7 @@ class FacetCalc:
         dFdn_correct = grad_F_dn - (grad_F_lstsq * mesh.X_orthog).sum(dim=1)      # shape = [n_facets, dim]
         # Replace normal part of gradient with facet gradient
         grad_F_dot_n = (grad_F_lstsq * mesh.normals_hat).sum(dim=1, keepdim=True)       # shape = [n_facets, 1, dim]
-        grad_F = grad_F_lstsq + (dFdn_correct.unsqueeze(1) - grad_F_dot_n) * mesh.normals_hat            # [n_facets, 2, 3]
+        grad_F = grad_F_lstsq + (dFdn_correct.unsqueeze(1) - grad_F_dot_n) * mesh.normals_hat            # [n_facets, dim, dim+1]
 
         self.grad_V = grad_F[:, :, :dim]
         self.grad_T_n = dFdn_correct[:, -1]      # shape = [n_facets]
