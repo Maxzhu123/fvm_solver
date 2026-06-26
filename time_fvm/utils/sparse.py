@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 
 from time_fvm.utils.ell_kernel import csr_to_ell, ell_spmm, ell_spmv
 
+USE_CPU_ELL = True
+
 
 class SPM(ABC):
     """ Sparse matrix. """
@@ -39,27 +41,48 @@ class SPMCuda(SPM):
 
 
 class SPMGeneral(SPM):
-    """ Normal sparse matrix, directly using pytorch sparse operations. """
+    """ Sparse matrix for non-CUDA devices. """
     def __init__(self, A: torch.Tensor, device):
         super().__init__(A, device)
         if A.layout != torch.sparse_csr:
             A = A.to_sparse_csr()
 
         A = A.to(device)
-        self.A = torch.sparse_csr_tensor(A.crow_indices().to(torch.int32), A.col_indices().to(torch.int32), A.values(),
-                                         size=A.size(), device=device)
+        self.use_ell = USE_CPU_ELL
+        if self.use_ell:
+            self.vals, self.cols = csr_to_ell(A)
+        else:
+            self.A = torch.sparse_csr_tensor(
+                A.crow_indices().to(torch.int32),
+                A.col_indices().to(torch.int32),
+                A.values(),
+                size=A.size(),
+                device=device,
+            )
 
     def spMM(self, X: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
-        if b is None:
-            return torch.sparse.mm(self.A, X)
-        else:
-            return torch.addmm(b, self.A, X)
+        if not self.use_ell:
+            AX = torch.sparse.mm(self.A, X)
+            if b is not None:
+                AX.add_(b.unsqueeze(-1))
+            return AX
+
+        AX = (self.vals.unsqueeze(-1) * X[self.cols]).sum(dim=1)
+        if b is not None:
+            AX.add_(b.unsqueeze(-1))
+        return AX
 
     def spMV(self, x: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
-        if b is None:
-            return torch.mv(self.A, x)
-        else:
-            return torch.addmv(b, self.A, x)
+        if not self.use_ell:
+            Ax = torch.mv(self.A, x)
+            if b is not None:
+                Ax.add_(b)
+            return Ax
+
+        Ax = (self.vals * x[self.cols]).sum(dim=1)
+        if b is not None:
+            Ax.add_(b)
+        return Ax
 
 
 def to_sparse(A: torch.Tensor, device) -> SPM:
