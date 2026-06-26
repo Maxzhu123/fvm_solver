@@ -36,10 +36,11 @@ class FluidConstitution(ABC):
     def state_to_primative(self, state: torch.Tensor):
         """ Convert from conserved quantities (momentum, rho, energy) to primitives (velocity, rho, T) """
         d = self.dim
-        momentum, rho, Q = state[:, :d], state[:, d:d+1], state[:, d+1:d+2]
+        momentum, rho, Q = state[:, :d], state[:, d], state[:, d+1]
+        rho, Q = rho.unsqueeze(-1), Q.unsqueeze(-1)
 
         V = momentum / rho
-        T = 1 / self.C_v * (Q / rho - 0.5 * V.square().sum(dim=1, keepdim=True))
+        T = (Q / rho - 0.5 * V.square().sum(dim=1, keepdim=True)) / self.C_v
         primatives = torch.cat([V, rho, T], dim=-1)
 
         return primatives, state
@@ -109,10 +110,12 @@ class FluidConstitution2D(FluidConstitution):
         # Strain and invariants
         D, I1, I2 = self._strain_values(grad_V_t)        # shape = [n_facets, 2, 2]
 
+        # Viscoisty Coefficients
+        T_eff = T / self.T_0
         # Viscosity = mu * (T/T0)^(3/2) * (T0 + S) / (T + S)
-        mu = self.mu * (T /  self.T_0)**1.5 * (self.T_0 + self.S_const) / (T + self.S_const)  # shape = [n_facets]
+        mu = self.mu * (T_eff**1.5) * (self.T_0 + self.S_const) / (T + self.S_const)  # shape = [n_facets]
         # Bulk viscosity: Proportional to T^2
-        mu_b = self.mu_b * T ** 2 / self.T_0 ** 2
+        mu_b = self.mu_b * (T_eff**2)
 
         a0 = (-mu_b * I1).view(-1, 1, 1)         # shape = [n_facets, 1, 1]
         a1 = (-2 * mu).view(-1, 1, 1)
@@ -275,11 +278,11 @@ class Heating(FVMFacetFlux):
         E_props = self.E_props
         mesh = E_props.mesh
         normals = mesh.normals                                                  # shape = [n_facets, dim]
-        V_face = E_props.Vs_facet                                               # shape = [n_facets, facets=2, n_comp=dim]
+        V_facet = E_props.Vs_facet                                               # shape = [n_facets, facets=2, n_comp=dim]
 
         tau = self.stress_calc.tau                                              # shape = [n_facets, dim, dim]
-        V_face = V_face.mean(dim=1, keepdim=True)                               # shape = [n_facets, 1, dim]
-        heating = (tau * V_face * normals.unsqueeze(-1)).sum(dim=(-1, -2))      # shape = [n_facets], n.Tau.V
+        V_facet = V_facet.mean(dim=1, keepdim=True)                               # shape = [n_facets, 1, dim]
+        heating = (tau * V_facet * normals.unsqueeze(-1)).sum(dim=(-1, -2))      # shape = [n_facets], n.Tau.V
 
         """ Thermal conductivity:
                 div(grad(T)) = sum(grad(T) * n_f)

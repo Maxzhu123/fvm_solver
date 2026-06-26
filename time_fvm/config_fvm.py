@@ -13,7 +13,7 @@ class BCMode(Enum):
 class ConfigFVM(ABC):
     device: str = "cuda"
     compile: bool = True
-    profile: bool = True         # Used for profiling code.
+    profile: bool = False         # Used for profiling code.
 
     problem_setup: str = None    # {ellipse, nozzle}
     n_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
@@ -96,13 +96,13 @@ class ConfigEllipse(ConfigFVM):
     n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
-    min_A: float = 1e-5
-    max_A: float = 1e-5
+    min_A: float = 2e-5
+    max_A: float = 2e-5
     lnscale: float = 0.25
 
     # Save configuration
-    plot_t: float = 0.3   # Time interval between plots
-    save_t: float = 0.3    # Time interval between saves
+    plot_t: float = 0.25   # Time interval between plots
+    save_t: float = 0.1    # Time interval between saves
     print_i: int = 500   # Iterations between print statements
     end_t: float = 5       # Max simulation time.
 

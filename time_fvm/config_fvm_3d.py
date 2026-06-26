@@ -48,8 +48,8 @@ class ConfigEllipse(ConfigFVM):
 
     # Physical parameters
     T_0: float = 100        # Reference temperature
-    viscosity: float = 5e-4     # At reference temp
-    visc_bulk: float = 5e-4
+    viscosity: float = 0.1e-4     # At reference temp
+    visc_bulk: float = 1e-4
     thermal_cond: float = 1e-6
     S_const: float = 110.4       # Sutherland's constant
     gamma: float = 1.2  # Ratio of specific heats
@@ -58,5 +58,3 @@ class ConfigEllipse(ConfigFVM):
     def __post_init__(self):
         self.exit_cfg = EllipseFarfield()
         self.inlet_cfg = EllipseInlet()
-
-

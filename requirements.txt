@@ -3,22 +3,8 @@ matplotlib
 numpy
 scipy
 codetiming
-torch
+torch==2.11.0
 
-#torch_geometric
-#torch_sparse
-#torch_scatter
-#meshpy
-
-# nvmath-python[cu12,dx]
-# Using conda condacupy # conda
-# cupy-cuda12x
-
-# mup
-
-# Graph utils
-# treverhines-rbf
 meshpy
 shapely
 pyvista
-tetgen
