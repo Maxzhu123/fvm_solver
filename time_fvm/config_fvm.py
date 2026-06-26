@@ -11,7 +11,7 @@ class BCMode(Enum):
 
 @dataclass
 class ConfigFVM(ABC):
-    device: str = "cuda"
+    device: str = "cpu"
     compile: bool = True
     profile: bool = False         # Used for profiling code.
 
