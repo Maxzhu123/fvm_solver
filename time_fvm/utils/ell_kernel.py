@@ -8,16 +8,11 @@ import triton.language as tl
 @triton.autotune(
     configs=[
         triton.Config({'BLOCK_M': 16, 'BLOCK_B': 16}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 16, 'BLOCK_B': 32}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 16, 'BLOCK_B': 64}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_M': 32, 'BLOCK_B': 16}, num_warps=2, num_stages=2),
         triton.Config({'BLOCK_M': 32, 'BLOCK_B': 32}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_M': 32, 'BLOCK_B': 64}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_M': 64, 'BLOCK_B': 16}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_M': 64, 'BLOCK_B': 32}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 64, 'BLOCK_B': 64}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 128, 'BLOCK_B': 32}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 128, 'BLOCK_B': 64}, num_warps=8, num_stages=4),
     ],
     key=['M', 'B', 'K', 'HAS_BIAS'],
 )
@@ -82,17 +77,11 @@ def ell_spmm_kernel(
 
 @triton.autotune(
     configs=[
-        triton.Config({'BLOCK_M': 16}, num_warps=2, num_stages=2),
         triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=2),
         triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=3),
         triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=4),
     ],
     key=['M', 'K'],
 )
@@ -254,4 +243,3 @@ def csr_to_ell(csr: torch.Tensor, K: int | None = None):
         ell_vals[rows, k] = val[src_idx]
 
     return ell_vals, ell_cols
-

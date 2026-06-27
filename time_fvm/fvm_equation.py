@@ -8,6 +8,7 @@ from time_fvm.utils.plot_3d import plot_streamlines
 
 from time_fvm.fvm_stepping.facet_process import FacetCalc
 from time_fvm.time_solvers.t_solvers import FVMCells
+from time_fvm.config_fvm import ViscosityModel as VM
 if TYPE_CHECKING:
     from time_fvm.mesh_utils.fvm_mesh import FVMMesh
     from config_fvm import ConfigFVM
@@ -100,9 +101,11 @@ class FluidConstitution2D(FluidConstitution):
         super().__init__(cfg, dim)
         assert self.dim == 2, "Only for 2D fluids"
 
+        self.visc_model = cfg.visc_model
+
     def _tau(self, E_props: FacetCalc):
         """ Compute stress tensor:
-                tau = mu * (grad(V) + grad(V).T) + mu_b * div(V) * I
+                tau = a0(I1, I2)I + a2(I1, I2)D
          """
         T = E_props.T_facet.mean(dim=1).squeeze()         # shape = [n_facets]
         grad_V_t = E_props.grad_V   # shape = [n_facets, dim=2, n_comp=2]
@@ -110,22 +113,15 @@ class FluidConstitution2D(FluidConstitution):
         # Strain and invariants
         D, I1, I2 = self._strain_values(grad_V_t)        # shape = [n_facets, 2, 2]
 
-        # Viscoisty Coefficients
-        T_eff = T / self.T_0
-        # Viscosity = mu * (T/T0)^(3/2) * (T0 + S) / (T + S)
-        mu = self.mu * (T_eff**1.5) * (self.T_0 + self.S_const) / (T + self.S_const)  # shape = [n_facets]
-        # Bulk viscosity: Proportional to T^2
-        mu_b = self.mu_b * (T_eff**2)
-
-        a0 = (-mu_b * I1).view(-1, 1, 1)         # shape = [n_facets, 1, 1]
-        a1 = (-2 * mu).view(-1, 1, 1)
+        a0, a1 = self._viscosity_coef(T, I1, I2)
 
         eye = torch.eye(2, device=self.device).unsqueeze(0)
-        self.tau = a0 * eye + a1 * D  # shape = [n_facets, 2, 2]
+        a0, a1, I1 = a0.view(-1, 1, 1), a1.view(-1, 1, 1), I1.view(-1, 1, 1)
+        self.tau = a0 * eye + a1 * (D-1/2 * I1 * eye)  # shape = [n_facets, 2, 2]
 
     def _strain_values(self, grad_V_t: torch.Tensor):
         """ Compute strain tensor:
-                epsilon = 0.5 * (grad(V) + grad(V).T)
+                D = 0.5 * (grad(V) + grad(V).T)
             Then compute the 2D invariants:
                 I1 = tr(D)  (divergence)
                 I2 = tr(D^2) (Magnitude of deformation)
@@ -137,6 +133,51 @@ class FluidConstitution2D(FluidConstitution):
         I2 = (D**2).sum(dim=(-1, -2))       # Since D is symmetric, this is faster.
 
         return D, I1, I2
+
+    def _viscosity_coef(self, T, I1, I2):
+        """ Get viscosity magnitudes a0 and a1.
+
+            For compressible fluids, use gamma_dot = sqrt(2 * D' : D')
+            Where D' = D - 1/2(div . u) I = D - 1/2 I1 I
+            This adjusts for distortional vs volumetric strain.
+        """
+        n = 0.5
+        min_fact = 0.3
+        gamma_scale = 15
+
+        # Viscoisty Coefficients
+        T_eff = T / self.T_0
+        # Viscosity = mu * (T/T0)^(3/2) * (T0 + S) / (T + S)
+        mu = self.mu * (T_eff**1.5) * (self.T_0 + self.S_const) / (T + self.S_const)  # shape = [n_facets]
+        # Bulk viscosity: Proportional to T^2
+        mu_b = self.mu_b * (T_eff**2)
+
+        # a0
+        a0 = -mu_b * I1       # shape = [n_facets, 1, 1]
+        # a1
+        if self.visc_model == VM.Newtonian:
+            factor = 1
+        else:
+            # D':D' = D:D - 1/2 I1^2
+            gamma_dot_sq = 1e-9 + 2 * (I2 - 1/2 * I1**2).clamp(min=0)
+            if self.visc_model == VM.PowerLaw:
+                # Power law fluid with limiter
+                limit = 1 / min_fact
+                factor = gamma_scale ** (1-n) * gamma_dot_sq ** ((n-1)/2)
+                factor = limit * torch.tanh((factor / limit)**2)**(1/2)
+            elif self.visc_model == VM.Carreau:
+                # Carreau
+                factor = min_fact + (2 - 2 * min_fact) * (1 + gamma_scale**(-2) * gamma_dot_sq)**((n-1)/2)
+            elif self.visc_model == VM.HerschelBulkley:
+                # Herschel–Bulkley approximate
+                s = torch.sigmoid((5 * gamma_scale - gamma_dot_sq)/ gamma_scale)
+                factor = min_fact + (2 - min_fact) * s
+            else:
+                raise ValueError(f"Unknown viscosity model: {self.visc_model}")
+        a1 = -2 * mu * factor
+
+        self.mod = factor
+        return a0, a1
 
 
 class FluidConstitution3D(FluidConstitution):
@@ -442,6 +483,7 @@ class FVMEquation:
         plot_points(self.mesh.centroids.cpu(), values.T, show_index=show_index, title=title, lims=lims, Xlims=Xlims)
 
     def plot_interp(self, values, title="Cell Values", Xlims=None):
+        """ values.shape = (n_cells, n_comp) """
         plot_interp_cell(self.mesh.vertices, self.mesh.cells, values.T, Xlims=Xlims, title=title)
 
     def plot_interp_3d(self, velocity, scalar=None, scalar_name=""):

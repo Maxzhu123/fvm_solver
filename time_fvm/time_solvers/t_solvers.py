@@ -117,6 +117,12 @@ class TSolver(ABC):
         titles = [f'{title} at {t=:4g}' for title in titles]
         self.eq.plot_interp(primatives, title=titles, Xlims=Xlims)
 
+        # # Plot viscosity stats
+        # if t > 0.:
+        #     mod = self.eq.phy_setup.mod
+        #     cell_mod = mod[self.eq.mesh.cell_to_facet].mean(dim=-1)
+        #     self.eq.plot_interp(cell_mod, title=f"Mean: {cell_mod.mean().cpu().item():.2g}", Xlims=Xlims)
+
     def _plot_3d(self, t):
         primatives = self.cells.get_values()[0]
         assert not torch.any(torch.isnan(primatives)), "Nan detected in solver solution"

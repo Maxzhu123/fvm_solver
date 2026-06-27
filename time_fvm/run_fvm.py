@@ -83,6 +83,11 @@ def init_conds_ellipses(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: FluidC
     v_in = inlet_cfg.v_n_inf
     T_in = inlet_cfg.T_inf
     rho_in = inlet_cfg.rho_inf
+    # Set outlet config same as inlet
+    outlet_cfg = cfg.exit_cfg
+    outlet_cfg.v_n_inf = -inlet_cfg.v_n_inf
+    outlet_cfg.T_inf = inlet_cfg.T_inf
+    outlet_cfg.rho_inf = inlet_cfg.rho_inf
 
     # Boundary conditions
     bc_tags = {}
@@ -115,8 +120,8 @@ def init_conds_ellipses(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: FluidC
 
 def main():
     import pickle
-    np.random.seed(1)
-    torch.manual_seed(1)
+    np.random.seed(321)
+    torch.manual_seed(321)
 
     new_mesh = True
 
@@ -147,8 +152,6 @@ def main():
     else:
         raise ValueError(f'Unknown mode {cfg.problem_setup}')
 
-    # solver = FVMEquation(cfg, phy_setup, mesh, cfg.N_comp, bc_tags, us_init=us_init)
-    # solver.solve()
     fvm_setup = FVMEquation(cfg, phy_setup, mesh, bc_tags, Us_init=Us_init)
     solver = get_solver(fvm_setup, cfg)
     solver.solve()

@@ -8,10 +8,16 @@ class BCMode(Enum):
     Characteristic = "characteristic"
     Farfield = "Farfield"
 
+class ViscosityModel(Enum):
+    Newtonian = "Newton"        # Constant
+    PowerLaw = "PowerLaw"       # gamma_dot ^ (n-1)
+    Carreau = "Carreau"         # Interpolate between two values
+    HerschelBulkley = "HerschelBulkley" # Step between two values
+
 
 @dataclass
 class ConfigFVM(ABC):
-    device: str = "cpu"
+    device: str = "cuda"
     compile: bool = True
     profile: bool = False         # Used for profiling code.
 
@@ -43,6 +49,7 @@ class ConfigFVM(ABC):
     S_const: float = None       # Sutherland's constant
     gamma: float = None  # Ratio of specific heats
     C_v: float = None     # Specific heat at constant volume
+    visc_model: ViscosityModel = ViscosityModel.Newtonian
 
     # Stability parameters
     v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
@@ -68,9 +75,8 @@ class ConfigBC(ABC):
 @dataclass
 class EllipseFarfield(ConfigBC):
     mode: BCMode = BCMode.Characteristic
-
     # Farfield physical parameters
-    v_n_inf: float = -5.5
+    v_n_inf: float = 5.5
     v_t_inf: float = 0
     rho_inf: float = 1
     T_inf: float = 100
@@ -79,12 +85,11 @@ class EllipseFarfield(ConfigBC):
 @dataclass
 class EllipseInlet(ConfigBC):
     mode: BCMode = BCMode.Characteristic
-
     # Target inlet physical parameters
-    v_n_inf = 5.5
+    v_n_inf: float = 3.
     v_t_inf: float = 0
-    rho_inf = 1
-    T_inf = 100
+    rho_inf: float = 1
+    T_inf: float = 100
 
 
 @dataclass
@@ -92,28 +97,29 @@ class ConfigEllipse(ConfigFVM):
     problem_setup: str = "ellipse"    # {ellipse, nozzle}
 
     # Temporal solver parameters
-    dt: float = 1e-4
+    dt: float = 5e-5
     n_iter: int = 50000     # Max number of iterations
 
     # mesh parameters
     min_A: float = 5e-5
-    max_A: float = 5e-5
+    max_A: float = 10e-5
     lnscale: float = 0.25
 
     # Save configuration
-    plot_t: float = 0.25   # Time interval between plots
-    save_t: float = 0.25    # Time interval between saves
+    plot_t: float = 0.15   # Time interval between plots
+    save_t: float = 1000    # Time interval between saves
     print_i: int = 500   # Iterations between print statements
     end_t: float = 5       # Max simulation time.
 
     # Physical parameters
     T_0: float = 100        # Reference temperature
-    viscosity: float = 10e-4     # At reference temp
-    visc_bulk: float = 5e-4
-    thermal_cond: float = 1e-6
+    viscosity: float = 60e-4     # At reference temp
+    visc_bulk: float = 15e-4
+    thermal_cond: float = 5e-5
     S_const: float = 110.4       # Sutherland's constant
     gamma: float = 1.2  # Ratio of specific heats
     C_v: float = 2     # Specific heat at constant volume
+    visc_model: ViscosityModel = ViscosityModel.HerschelBulkley
 
     def __post_init__(self):
         self.exit_cfg = EllipseFarfield()
@@ -123,7 +129,6 @@ class ConfigEllipse(ConfigFVM):
 @dataclass
 class NozzleFarfield(ConfigBC):
     mode: BCMode = BCMode.Characteristic
-
     # Farfield physical parameters
     v_n_inf: float = 0
     v_t_inf: float = 0
@@ -134,7 +139,6 @@ class NozzleFarfield(ConfigBC):
 @dataclass
 class NozzleInlet(ConfigBC):
     mode: BCMode = BCMode.Characteristic
-
     # Target inlet physical parameters
     v_n_inf: float = 0
     v_t_inf: float = 0
