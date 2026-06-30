@@ -49,7 +49,11 @@ class ConfigFVM(ABC):
     S_const: float = None       # Sutherland's constant
     gamma: float = None  # Ratio of specific heats
     C_v: float = None     # Specific heat at constant volume
+    # Viscosity options
     visc_model: ViscosityModel = ViscosityModel.Newtonian
+    visc_n: float = None                # power-law index. 1 is newtonian, >1 shear thickening, <1 shear thinning.
+    visc_min_factor: float = None
+    visc_gamma_scale: float = None      # shear-rate scale where non-Newtonian effects become important.
 
     # Stability parameters
     v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
@@ -119,7 +123,10 @@ class ConfigEllipse(ConfigFVM):
     S_const: float = 110.4       # Sutherland's constant
     gamma: float = 1.2  # Ratio of specific heats
     C_v: float = 2     # Specific heat at constant volume
-    visc_model: ViscosityModel = ViscosityModel.HerschelBulkley
+    visc_model: ViscosityModel = ViscosityModel.Carreau
+    visc_n: float = 1.3                # power-law index. 1 is newtonian, >1 shear thickening, <1 shear thinning.
+    visc_min_factor: float = 0.3        # Minimum viscosity
+    visc_gamma_scale: float = 15      # shear-rate scale where non-Newtonian effects become important.
 
     def __post_init__(self):
         self.exit_cfg = EllipseFarfield()

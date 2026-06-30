@@ -102,6 +102,9 @@ class FluidConstitution2D(FluidConstitution):
         assert self.dim == 2, "Only for 2D fluids"
 
         self.visc_model = cfg.visc_model
+        self.n = cfg.visc_n
+        self.min_fact = cfg.visc_min_factor
+        self.gamma_scale = cfg.visc_gamma_scale
 
     def _tau(self, E_props: FacetCalc):
         """ Compute stress tensor:
@@ -141,9 +144,9 @@ class FluidConstitution2D(FluidConstitution):
             Where D' = D - 1/2(div . u) I = D - 1/2 I1 I
             This adjusts for distortional vs volumetric strain.
         """
-        n = 0.5
-        min_fact = 0.3
-        gamma_scale = 15
+        n = self.n                  # Power law index
+        min_fact = self.min_fact    # Minimum viscosity
+        gamma_scale = self.gamma_scale  # Shear scale where viscosity becomes non-newtonian.
 
         # Viscoisty Coefficients
         T_eff = T / self.T_0
@@ -160,6 +163,7 @@ class FluidConstitution2D(FluidConstitution):
         else:
             # D':D' = D:D - 1/2 I1^2
             gamma_dot_sq = 1e-9 + 2 * (I2 - 1/2 * I1**2).clamp(min=0)
+            # print(f'{I2.mean() = }, {I2.quantile(0.1) = :.2g}, {I2.quantile(0.9) = :.2g}')
             if self.visc_model == VM.PowerLaw:
                 # Power law fluid with limiter
                 limit = 1 / min_fact
@@ -167,11 +171,15 @@ class FluidConstitution2D(FluidConstitution):
                 factor = limit * torch.tanh((factor / limit)**2)**(1/2)
             elif self.visc_model == VM.Carreau:
                 # Carreau
-                factor = min_fact + (2 - 2 * min_fact) * (1 + gamma_scale**(-2) * gamma_dot_sq)**((n-1)/2)
+                factor = min_fact + (2 - 2 * min_fact) * (1 + 4*gamma_scale**(-2) * gamma_dot_sq)**((n-1)/2)
+                if n > 1:       # Shear thickening
+                    factor = factor - 2 + 2 * min_fact
             elif self.visc_model == VM.HerschelBulkley:
                 # Herschel–Bulkley approximate
-                s = torch.sigmoid((5 * gamma_scale - gamma_dot_sq)/ gamma_scale)
-                factor = min_fact + (2 - min_fact) * s
+                s = torch.sigmoid((gamma_scale - gamma_dot_sq.sqrt())/ (0.1 * gamma_scale))
+                factor = min_fact + (2.5 - min_fact) * s
+                if n > 1:       # Shear thickening
+                    factor = 1 / factor
             else:
                 raise ValueError(f"Unknown viscosity model: {self.visc_model}")
         a1 = -2 * mu * factor
