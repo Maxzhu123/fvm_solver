@@ -124,7 +124,7 @@ class ConfigEllipse(ConfigFVM):
     gamma: float = 1.2  # Ratio of specific heats
     C_v: float = 2     # Specific heat at constant volume
     visc_model: ViscosityModel = ViscosityModel.Carreau
-    visc_n: float = 1.3                # power-law index. 1 is newtonian, >1 shear thickening, <1 shear thinning.
+    visc_n: float = 0.5                # power-law index. 1 is newtonian, >1 shear thickening, <1 shear thinning.
     visc_min_factor: float = 0.3        # Minimum viscosity
     visc_gamma_scale: float = 15      # shear-rate scale where non-Newtonian effects become important.
 
