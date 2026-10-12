@@ -35,6 +35,7 @@ class MeshCache:
     X_orthog: torch.Tensor              # (n_facets, dim, 1)
     cell_disps: torch.Tensor            # (n_facets, dim)
     facet_to_cell_main: torch.Tensor    # (n_facets_m, 2)
+    face_cell_indices: torch.Tensor    # (n_facets, 2); boundary cell repeated on both sides
     cell_dist_proj: torch.Tensor        # (n_facets_m)
     cell_facet_signs: torch.Tensor      # (3 * n_cells)  flattened
     cell_to_facet: torch.Tensor         # (3 * n_cells)  flattened
@@ -100,6 +101,13 @@ class MeshCache:
         assigned_boundary = face_assigned[self.bc_facet_mask]
         self.bc_facet_side = (~assigned_boundary).float().argmax(dim=1).int()
         self.bc_locations = torch.where(self.bc_facet_mask)[0].int()
+
+        # Cache the inverse mapping for gradient averaging. Boundary faces use
+        # their adjacent cell gradient on both sides, matching the former scatter.
+        self.face_cell_indices = torch.empty((self.n_facets, 2), dtype=torch.int32, device=device)
+        cell_ids = torch.arange(self.n_cells, dtype=torch.int32, device=device).repeat_interleave(self.n_neigh)
+        self.face_cell_indices[self.cell_to_facet, self.cell_facet_signs] = cell_ids
+        self.face_cell_indices[self.bc_locations, self.bc_facet_side] = self.facet_to_cell_bc.to(torch.int32)
 
         # Flux matrix
         self.flux_mat = self._build_flux_mat()
@@ -360,14 +368,8 @@ class FacetCalc:
 
         # Compute face and cell gradients of velocity and temperature
         grad_F = cell_grads[:, :, self.grad_comps].reshape(self.n_cells, dim*(dim+1))      # shape = [n_cells, dim * (dim+1)]
-        grad_F_flat = torch.repeat_interleave(grad_F, self.n_local, dim=0, output_size=self.n_local*self.n_cells) # [dvx/dx, dvy/dx, dvx/dy, dvy/dy, dT/dx, dT/dy]
-        grad_F_bc = grad_F[mesh.facet_to_cell_bc]
-        # Project cell gradients to left and right face values
-        grad_facet_all = torch.empty((self.n_facets, 2, dim*(dim+1)), device=self.device)
-        grad_facet_all[mesh.cell_to_facet, mesh.cell_facet_signs] = grad_F_flat
-        grad_facet_all[mesh.bc_locations, mesh.bc_facet_side] = grad_F_bc
-        # Average gradient over both sides of facet
-        grad_F_lstsq = grad_facet_all.mean(dim=1)
+        # Average limited gradients directly from the adjacent cells.
+        grad_F_lstsq = 0.5 * (grad_F[mesh.face_cell_indices[:, 0]] + grad_F[mesh.face_cell_indices[:, 1]])
         grad_F_lstsq = grad_F_lstsq.reshape(self.n_facets, dim, dim+1)   # shape = [n_facets, dim, dim+1]
 
         # Get face gradients using direct cell to face gradient operator.

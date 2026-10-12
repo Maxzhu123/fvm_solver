@@ -284,9 +284,11 @@ class Adevction(FVMFacetFlux):
             fluxes += advec_flux
 
 
-class Viscosity(FVMFacetFlux):
-    """ Viscous forces:
-            div(mu grad(V)) = sum_f tau_f * n_f
+class ViscousFlux(FVMFacetFlux):
+    """Momentum flux from viscous stress, viscous work, and thermal conduction.
+
+    Traction uses the area-weighted facet normal and is shared locally by the
+    momentum and energy calculations.
     """
     E_props: FacetCalc
     def __init__(self, E_props: FacetCalc, stress_calc: FluidConstitution, device="cpu"):
@@ -295,56 +297,27 @@ class Viscosity(FVMFacetFlux):
         self.mesh = E_props.mesh
         self.stress_calc = stress_calc
         self.dim = E_props.dim
+        self.kappa = stress_calc.thermal_cond
 
     def facet_fluxes(self, fluxes=None):
         E_props = self.E_props
+        mesh = self.mesh
 
-        tau = self.stress_calc.tau
-        F = (tau * self.mesh.normals.unsqueeze(-1)).sum(dim=-2)  # shape = [n_facets, dim]
+        # Viscous momentum flux: contract stress with the area-weighted normal.
+        traction = (self.stress_calc.tau * mesh.normals.unsqueeze(-1)).sum(dim=-2)
+        V_mean = E_props.Vs_facet.mean(dim=1)
+        # Viscous work in the energy flux: traction dotted with mean face velocity.
+        heating = (traction * V_mean).sum(dim=-1)
+        # Conductive heat flux: -kappa * (dT/dn) * facet area.
+        heating.addcmul_(E_props.grad_T_n, mesh.facet_size.squeeze(), value=-self.kappa)
 
         if fluxes is None:
             fluxes = torch.zeros(E_props.n_facets, E_props.n_comp, device=self.device)
-            fluxes[:, :self.dim] = F
-            return fluxes
-        else:
-            fluxes[:, :self.dim] += F
-
-
-class Heating(FVMFacetFlux):
-    """ Viscous heating term: div(tau V) = sum_f tau_f * V_f * n_f
-        Thermal conductivity term:  div(grad(T)) = sum(grad(T) * n_f)
-    """
-    E_props: FacetCalc
-    def __init__(self, E_props: FacetCalc, stress_calc: FluidConstitution, device="cpu"):
-        self.E_props = E_props
-        self.stress_calc = stress_calc
-        self.dim = E_props.dim
-
-        self.kappa = stress_calc.thermal_cond
-        self.device = device
-
-    def facet_fluxes(self, fluxes=None):
-        E_props = self.E_props
-        mesh = E_props.mesh
-        normals = mesh.normals                                                  # shape = [n_facets, dim]
-        V_facet = E_props.Vs_facet                                               # shape = [n_facets, facets=2, n_comp=dim]
-
-        tau = self.stress_calc.tau                                              # shape = [n_facets, dim, dim]
-        V_facet = V_facet.mean(dim=1, keepdim=True)                               # shape = [n_facets, 1, dim]
-        heating = (tau * V_facet * normals.unsqueeze(-1)).sum(dim=(-1, -2))      # shape = [n_facets], n.Tau.V
-
-        """ Thermal conductivity:
-                div(grad(T)) = sum(grad(T) * n_f)
-        """
-        grad_T_n = E_props.grad_T_n     # shape = [n_facets]
-        # heating -= self.kappa * grad_T_n * mesh.facet_len.squeeze()
-        heating.addcmul_(grad_T_n, mesh.facet_size.squeeze(), value=-self.kappa)
-
-        if fluxes is None:
-            fluxes = torch.zeros(self.E_props.n_facets, self.E_props.n_comp, device=self.device)
+            fluxes[:, :self.dim] = traction
             fluxes[:, self.dim+1] = heating
             return fluxes
         else:
+            fluxes[:, :self.dim] += traction
             fluxes[:, self.dim+1] += heating
 
 
@@ -446,8 +419,7 @@ class FVMEquation:
 
         self.P_force = PressureForce(E_props, self.phy_setup, device=device)
         self.U_advect = Adevction(E_props, self.phy_setup, device=device)
-        self.U_visc = Viscosity(E_props, self.phy_setup, device=device)
-        self.Heat = Heating(E_props, self.phy_setup, device=device)
+        self.U_visc = ViscousFlux(E_props, self.phy_setup, device=device)
         self.KT_diff = KTDiffusion(E_props, cfg.v_factor, self.phy_setup, device=device)
 
         E_props.clear_temp()
@@ -464,10 +436,8 @@ class FVMEquation:
         fluxes = self.U_advect.facet_fluxes()
         # Pressure term
         self.P_force.facet_fluxes(fluxes)
-        # Viscosity term
+        # Viscous momentum flux, viscous work, and thermal conduction
         self.U_visc.facet_fluxes(fluxes)
-        # Heating term
-        self.Heat.facet_fluxes(fluxes)
         # MUSCL term
         self.KT_diff.facet_fluxes(fluxes)
         # Compute divergence

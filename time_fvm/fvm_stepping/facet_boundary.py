@@ -155,16 +155,8 @@ class BoundarySetter:
         l = r - d, parallel component of r
         U_f = U_0 + d * dUdn + (r-d) grad(U)
         """
-        # dU = torch.mv(self.A_corr, cell_grads.reshape(-1))
-        # U_face_flat.add_(dU)
-
-        # U_face_flat.addmv_(
-        #     self.A_corr,
-        #     cell_grads.view(-1),
-        # )
-
-        dU = self.A_corr.spMV(cell_grads.view(-1))
-        U_face_flat.add_(dU)
+        # Accumulate the correction directly, without a temporary or add kernel.
+        self.A_corr.spMV(cell_grads.view(-1), b=U_face_flat, out=U_face_flat)
 
     def _build_sparse_nonorthog_correct(self):
         """

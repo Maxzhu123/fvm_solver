@@ -13,8 +13,8 @@ class SPM(ABC):
         self.device = device
 
     @abstractmethod
-    def spMV(self, x: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
-        """ Sparse matrix-vector multiply: Ax+b """
+    def spMV(self, x: torch.Tensor, b: torch.Tensor=None, *, out: torch.Tensor=None) -> torch.Tensor:
+        """Ax+b, optionally written to out. out may alias b, but not x or A."""
         raise NotImplementedError("SPM is an abstract base class")
 
     @abstractmethod
@@ -36,8 +36,8 @@ class SPMCuda(SPM):
     def spMM(self, X: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
         return ell_spmm(self.vals, self.cols, X, b=b)
 
-    def spMV(self, x: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
-        return ell_spmv(self.vals, self.cols, x, b=b)
+    def spMV(self, x: torch.Tensor, b: torch.Tensor=None, *, out: torch.Tensor=None) -> torch.Tensor:
+        return ell_spmv(self.vals, self.cols, x, b=b, out=out)
 
 
 class SPMGeneral(SPM):
@@ -72,17 +72,17 @@ class SPMGeneral(SPM):
             AX.add_(b.unsqueeze(-1))
         return AX
 
-    def spMV(self, x: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
+    def spMV(self, x: torch.Tensor, b: torch.Tensor=None, *, out: torch.Tensor=None) -> torch.Tensor:
         if not self.use_ell:
             Ax = torch.mv(self.A, x)
             if b is not None:
                 Ax.add_(b)
-            return Ax
+            return Ax if out is None else out.copy_(Ax)
 
         Ax = (self.vals * x[self.cols]).sum(dim=1)
         if b is not None:
             Ax.add_(b)
-        return Ax
+        return Ax if out is None else out.copy_(Ax)
 
 
 def to_sparse(A: torch.Tensor, device) -> SPM:
