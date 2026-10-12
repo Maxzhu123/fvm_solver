@@ -7,6 +7,7 @@ if TYPE_CHECKING:
 class SlopeLimiter:
     def __init__(self, areas, cfg: ConfigFVM):
         lim_p = cfg.lim_p
+        self.lim_p = lim_p
         K = cfg.lim_K
         areas = areas.view(-1, 1, 1)
 

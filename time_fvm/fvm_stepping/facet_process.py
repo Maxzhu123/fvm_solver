@@ -6,6 +6,7 @@ from time_fvm.mesh_utils.mesh_store import Facet
 from time_fvm.utils.sparse import combine_facet_operators, lift_sparse_matrix, interleave_sparse_rows, to_sparse, SPM
 from time_fvm.fvm_stepping.facet_boundary import BoundarySetter
 from time_fvm.fvm_stepping.limiter import SlopeLimiter
+from time_fvm.utils.reconstruction_kernel import limit_face_projection
 if TYPE_CHECKING:
     from time_fvm.fvm_equation import FluidConstitution
     from time_fvm.mesh_utils.fvm_mesh import FVMMesh
@@ -347,16 +348,12 @@ class FacetCalc:
         Us_cell_facet = torch.cat([Us, U_facet_bc])         # shape = [n_cells + n_facets_bc, n_comp]
         cell_grads = self._cell_grads(Us_cell_facet)        # shape = [n_cells, 2, n_comp]
 
-        # Compute limited face values
-        Us_face, phi_lim = self._limit_face_vals(Us, Us_cell_facet, cell_grads)   # Us_face.shape = [n_cells, 3, n_comp], phi_lim.shape =  [n_cells, 1, n_comp]
-        Us_face = Us_face.view(self.n_local * self.n_cells, self.n_comp)
-        cell_grads = cell_grads * phi_lim
-        self.cell_grads = cell_grads    # Save for boundary conditions
-
-        # Project to left and right face values
+        # Get values by facet, scatter left and right face values
         U_face_all = torch.empty((self.n_facets, 2, self.n_comp), device=self.device)  # shape = [n_facets, 2, n_comp+6]
-        U_face_all[mesh.cell_to_facet, mesh.cell_facet_signs] = Us_face
         U_face_all[mesh.bc_locations, mesh.bc_facet_side] = U_facet_bc
+        # Compute limited face values
+        cell_grads = self._limit_face_projection(Us, Us_cell_facet, cell_grads, U_face_all)
+        self.cell_grads = cell_grads    # Save for boundary conditions
 
         # Decompose components back
         self.Vs_facet = U_face_all[:, :, :dim].contiguous()                   # shape = [n_facets, facets=2, n_comp=dim]
@@ -404,8 +401,25 @@ class FacetCalc:
 
         phi_lim = self.slope_limiter.limit(numerator, dU)               # shape = [n_cells, neigh, n_comp]
         Us_face = torch.addcmul(U_cent, dU, phi_lim)                    # shape = [n_cells, neigh, n_comp]
+        cell_grads = cell_grads * phi_lim
 
-        return Us_face, phi_lim
+        return Us_face, cell_grads
+
+    def _limit_face_projection(self, Us, Us_cell_facet, cell_grads, U_face_all):
+        """ Compute limited cell gradients and scatter cell-side face values. """
+        mesh = self.mesh
+        # Fused CUDA path for the P4 limiter; other cases use PyTorch.
+        if (Us.is_cuda and self.slope_limiter.lim_p == 4
+                and Us_cell_facet.dtype == cell_grads.dtype == U_face_all.dtype == torch.float32
+                and U_face_all.is_contiguous()):
+            return limit_face_projection(
+                Us_cell_facet, cell_grads, mesh.neigh_combine, mesh.cent_to_facet_disp,
+                self.slope_limiter.eps_p, mesh.cell_to_facet, mesh.cell_facet_signs, U_face_all)
+
+        Us_face, cell_grads = self._limit_face_vals(Us, Us_cell_facet, cell_grads)   # shape = [n_cells, n_local, n_comp], [n_cells, dim, n_comp]
+        Us_face = Us_face.view(self.n_local * self.n_cells, self.n_comp)
+        U_face_all[mesh.cell_to_facet, mesh.cell_facet_signs] = Us_face
+        return cell_grads   # Save for boundary conditions
 
     def _cell_grads(self, Us_cell_face):
         """ Vectorised gradient computation
