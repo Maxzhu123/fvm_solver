@@ -19,7 +19,7 @@ def main():
     phy_setup = FluidConstitution2D(cfg, dim=2)
 
     new_mesh = False
-    cfg.profile = True
+    cfg.profile = False
     cfg.min_A = 5e-6
     cfg.max_A = 1e-5
     cfg.n_iter = 5000

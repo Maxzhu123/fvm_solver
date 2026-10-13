@@ -244,8 +244,8 @@ class FVMFacetFlux(ABC):
     device: str
 
     #@abstractmethod
-    def facet_fluxes(self, fluxes=None):
-        """ Compute flux for each facet """
+    def facet_fluxes(self):
+        """ Return facet fluxes with shape [n_facets, n_comp]. """
         pass
 
 
@@ -260,7 +260,7 @@ class Adevction(FVMFacetFlux):
         self.E_props = E_props
         self.phy_setup = phy_setup
 
-    def facet_fluxes(self, fluxes=None):
+    def facet_fluxes(self):
         """ rho * U @ V.T @ n = rho V * phi
             f_x = rho V_x * phi
             f_y = rho V_y * phi
@@ -273,15 +273,13 @@ class Adevction(FVMFacetFlux):
         mom_f = E_props.mom_facet
         Q_faces = E_props.Q_facet
 
-        Q_p_P = Q_faces + self.phy_setup.P_face
-        Us_f = torch.cat([mom_f, rho_faces, Q_p_P], dim=-1)  # shape = [n_facets, facets=2, n_comp=3]
-        advec_flux = Us_f * phi.unsqueeze(-1)           # shape = [n_facets, facets=2, n_comp=3]
-        advec_flux = advec_flux.mean(dim=1)              # shape = [n_facets, n_comp=3]
-
-        if fluxes is None:
-            return advec_flux.contiguous()
-        else:
-            fluxes += advec_flux
+        # Average face fluxes before packing the components.
+        mom_flux = (mom_f * phi.unsqueeze(-1)).mean(dim=1)  # shape = [n_facets, dim]
+        mom_fluxes = mom_flux.unbind(dim=1)
+        rho_flux = (rho_faces.squeeze(-1) * phi).mean(dim=1)
+        Q_p_P = (Q_faces + self.phy_setup.P_face).squeeze(-1)
+        Q_flux = (Q_p_P * phi).mean(dim=1)
+        return torch.stack((*mom_fluxes, rho_flux, Q_flux), dim=1)  # shape = [n_facets, n_comp]
 
 
 class ViscousFlux(FVMFacetFlux):
@@ -299,7 +297,7 @@ class ViscousFlux(FVMFacetFlux):
         self.dim = E_props.dim
         self.kappa = stress_calc.thermal_cond
 
-    def facet_fluxes(self, fluxes=None):
+    def facet_fluxes(self):
         E_props = self.E_props
         mesh = self.mesh
 
@@ -311,19 +309,13 @@ class ViscousFlux(FVMFacetFlux):
         # Conductive heat flux: -kappa * (dT/dn) * facet area.
         heating.addcmul_(E_props.grad_T_n, mesh.facet_size.squeeze(), value=-self.kappa)
 
-        if fluxes is None:
-            fluxes = torch.zeros(E_props.n_facets, E_props.n_comp, device=self.device)
-            fluxes[:, :self.dim] = traction
-            fluxes[:, self.dim+1] = heating
-            return fluxes
-        else:
-            fluxes[:, :self.dim] += traction
-            fluxes[:, self.dim+1] += heating
+        mom_fluxes = traction.unbind(dim=1)
+        rho_flux = torch.zeros_like(heating)        # No viscous mass flux.
+        return torch.stack((*mom_fluxes, rho_flux, heating), dim=1)  # shape = [n_facets, n_comp]
 
 
 class PressureForce(FVMFacetFlux):
-    """ Special case. N
-        grad(rho) = div(rho I) """
+    """ Pressure momentum flux: P_mean * n, with the area-weighted normal. """
     E_props: FacetCalc
     dim: int
 
@@ -333,19 +325,16 @@ class PressureForce(FVMFacetFlux):
         self.phy_setup = phy_setup
         self.dim = phy_setup.dim
 
-    def facet_fluxes(self, fluxes=None):
-        normals = self.E_props.mesh.normals             # shape = [n_facets, 2]
+    def facet_fluxes(self):
+        normals = self.E_props.mesh.normals             # shape = [n_facets, dim]
         P_face = self.phy_setup.P_face      # shape = [n_facets, facets=2, n_comp=1]
 
-        P_face = P_face.mean(dim=1)  # shape = [n_facets, 1]
-        P_n = P_face * normals                 # shape = [n_facets, 2]
+        P_face = P_face.mean(dim=1).squeeze(-1)  # shape = [n_facets]
 
-        if fluxes is None:
-            fluxes = torch.zeros(self.E_props.n_facets, self.E_props.n_comp, device=self.device)
-            fluxes[:, :self.dim] = P_n
-            return fluxes # _flat
-        else:
-            fluxes[:, :self.dim] += P_n
+        mom_flux = P_face.unsqueeze(-1) * normals   # shape = [n_facets, dim]
+        mom_fluxes = mom_flux.unbind(dim=1)
+        zero_flux = torch.zeros_like(P_face)       # Pressure contributes only to momentum here.
+        return torch.stack((*mom_fluxes, zero_flux, zero_flux), dim=1)  # shape = [n_facets, n_comp]
 
 
 class KTDiffusion(FVMFacetFlux):
@@ -361,7 +350,7 @@ class KTDiffusion(FVMFacetFlux):
         self.phy_setup = phy_setup
         self.a_clip = 1
 
-    def facet_fluxes(self, fluxes=None):
+    def facet_fluxes(self):
         E_props = self.E_props
         rho_face = E_props.rho_facet
         Vs_face = E_props.Vs_facet                      # shape = [n_facets, facets=2, n_comp=dim]
@@ -388,17 +377,16 @@ class KTDiffusion(FVMFacetFlux):
         a_vel_A = v_factor * c_A + phi_max
         a_other_A = c_A + phi_max
 
+        a_other_A = a_other_A.squeeze(-1)
+
         # Flux = a/2 * (U_L - U_R) * facet_len
-        dmom = mom_face[:, 0] - mom_face[:, 1]          # [n_facets, dim]
-        drho = rho_face[:, 0] - rho_face[:, 1]          # [n_facets, 1]
-        dQ = Q_face[:, 0] - Q_face[:, 1]                # [n_facets, 1]
-
-        kt_fluxes = 0.5 * torch.cat([a_vel_A * dmom, a_other_A * drho, a_other_A * dQ], dim=1)
-
-        if fluxes is None:
-            return kt_fluxes
-        else:
-            fluxes += kt_fluxes
+        dmom = mom_face[:, 0] - mom_face[:, 1]       # shape = [n_facets, dim]
+        mom_flux = 0.5 * a_vel_A * dmom
+        mom_fluxes = mom_flux.unbind(dim=1)
+        drho = rho_face[:, 0, 0] - rho_face[:, 1, 0]    # shape = [n_facets]
+        dQ = Q_face[:, 0, 0] - Q_face[:, 1, 0]          # shape = [n_facets]
+        rho_flux, Q_flux = 0.5 * a_other_A * drho, 0.5 * a_other_A * dQ
+        return torch.stack((*mom_fluxes, rho_flux, Q_flux), dim=1)  # shape = [n_facets, n_comp]
 
 
 class FVMEquation:
@@ -441,11 +429,11 @@ class FVMEquation:
         # Advection term
         fluxes = self.U_advect.facet_fluxes()
         # Pressure term
-        self.P_force.facet_fluxes(fluxes)
+        fluxes = fluxes + self.P_force.facet_fluxes()
         # Viscous momentum flux, viscous work, and thermal conduction
-        self.U_visc.facet_fluxes(fluxes)
+        fluxes = fluxes + self.U_visc.facet_fluxes()
         # MUSCL term
-        self.KT_diff.facet_fluxes(fluxes)
+        fluxes = fluxes + self.KT_diff.facet_fluxes()
         # Compute divergence
         divergence = self._flux_to_div(fluxes)
 

@@ -8,9 +8,12 @@ USE_CPU_ELL = True
 
 class SPM(ABC):
     """ Sparse matrix. """
-    def __init__(self, A, device):
+    def __init__(self, A, device, ref_div=None):
         self.shape = A.shape
         self.device = device
+        # Zero-row-sum (DIFF) form: row i uses x[row_i // ref_div] as its
+        # reference, or None for the standard expanded form.
+        self.ref_div = ref_div
 
     @abstractmethod
     def spMV(self, x: torch.Tensor, b: torch.Tensor=None, *, out: torch.Tensor=None) -> torch.Tensor:
@@ -25,8 +28,8 @@ class SPM(ABC):
 
 class SPMCuda(SPM):
     """ Use triton accelerated ELL format for sparse matrix operations on CUDA. """
-    def __init__(self, A: torch.Tensor, device):
-        super().__init__(A, device)
+    def __init__(self, A: torch.Tensor, device, ref_div=None):
+        super().__init__(A, device, ref_div=ref_div)
         if A.layout != torch.sparse_csr:
             A = A.to_sparse_csr()
 
@@ -34,16 +37,16 @@ class SPMCuda(SPM):
         self.vals, self.cols = csr_to_ell(A)
 
     def spMM(self, X: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
-        return ell_spmm(self.vals, self.cols, X, b=b)
+        return ell_spmm(self.vals, self.cols, X, b=b, ref_div=self.ref_div)
 
     def spMV(self, x: torch.Tensor, b: torch.Tensor=None, *, out: torch.Tensor=None) -> torch.Tensor:
-        return ell_spmv(self.vals, self.cols, x, b=b, out=out)
+        return ell_spmv(self.vals, self.cols, x, b=b, out=out, ref_div=self.ref_div)
 
 
 class SPMGeneral(SPM):
     """ Sparse matrix for non-CUDA devices. """
-    def __init__(self, A: torch.Tensor, device):
-        super().__init__(A, device)
+    def __init__(self, A: torch.Tensor, device, ref_div=None):
+        super().__init__(A, device, ref_div=ref_div)
         if A.layout != torch.sparse_csr:
             A = A.to_sparse_csr()
 
@@ -67,7 +70,11 @@ class SPMGeneral(SPM):
                 AX.add_(b.unsqueeze(-1))
             return AX
 
-        AX = (self.vals.unsqueeze(-1) * X[self.cols]).sum(dim=1)
+        if self.ref_div is not None:
+            owner = torch.arange(self.vals.shape[0], device=X.device) // self.ref_div
+            AX = (self.vals.unsqueeze(-1) * (X[self.cols] - X[owner].unsqueeze(1))).sum(dim=1)
+        else:
+            AX = (self.vals.unsqueeze(-1) * X[self.cols]).sum(dim=1)
         if b is not None:
             AX.add_(b.unsqueeze(-1))
         return AX
@@ -79,18 +86,22 @@ class SPMGeneral(SPM):
                 Ax.add_(b)
             return Ax if out is None else out.copy_(Ax)
 
-        Ax = (self.vals * x[self.cols]).sum(dim=1)
+        if self.ref_div is not None:
+            owner = torch.arange(self.vals.shape[0], device=x.device) // self.ref_div
+            Ax = (self.vals * (x[self.cols] - x[owner].unsqueeze(1))).sum(dim=1)
+        else:
+            Ax = (self.vals * x[self.cols]).sum(dim=1)
         if b is not None:
             Ax.add_(b)
         return Ax if out is None else out.copy_(Ax)
 
 
-def to_sparse(A: torch.Tensor, device) -> SPM:
+def to_sparse(A: torch.Tensor, device, ref_div=None) -> SPM:
     device = torch.device(device)
     if device.type == "cuda":
-        return SPMCuda(A, device)
+        return SPMCuda(A, device, ref_div=ref_div)
     else:
-        return SPMGeneral(A, device)
+        return SPMGeneral(A, device, ref_div=ref_div)
 
 
 def combine_facet_operators(A_main, A_bc, b_bc, bc_edge_mask, n_edges, n_cells, n_comp, device):

@@ -14,7 +14,7 @@ import triton.language as tl
         triton.Config({'BLOCK_M': 64, 'BLOCK_B': 16}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_M': 64, 'BLOCK_B': 32}, num_warps=4, num_stages=3),
     ],
-    key=['M', 'B', 'K', 'HAS_BIAS'],
+    key=['M', 'B', 'K', 'HAS_BIAS', 'HAS_REF'],
 )
 @triton.jit
 def ell_spmm_kernel(
@@ -23,6 +23,8 @@ def ell_spmm_kernel(
     B: tl.constexpr,
     K: tl.constexpr,
     HAS_BIAS: tl.constexpr,
+    HAS_REF: tl.constexpr,
+    REF_DIV: tl.constexpr,
     stride_vals_m: tl.constexpr,
     stride_vals_k: tl.constexpr,
     stride_cols_m: tl.constexpr,
@@ -43,6 +45,19 @@ def ell_spmm_kernel(
     mask_y = (rows[:, None] < M) & (bs[None, :] < B)
     acc = tl.zeros((BLOCK_M, BLOCK_B), tl.float32)
 
+    # For zero-row-sum operators (e.g. the least-squares gradient) evaluate the
+    # differences first: y_i = sum_k A_ik * (x[col_ik] - x[owner(i)]).  This is
+    # algebraically identical (A @ 1 = 0) but annihilates constants exactly
+    # instead of relying on catastrophic cancellation.
+    if HAS_REF:
+        owner = rows // REF_DIV
+        mask_x = (rows[:, None] < M) & (bs[None, :] < B)
+        x_ref = tl.load(
+            x + owner[:, None] * stride_x_n + bs[None, :] * stride_x_b,
+            mask=mask_x,
+            other=0.0,
+        )
+
     for kk in range(K):
         a_vals = tl.load(
             vals + rows * stride_vals_m + kk * stride_vals_k,
@@ -62,7 +77,10 @@ def ell_spmm_kernel(
             other=0.0,
         )
 
-        acc += a_vals[:, None] * x_vals
+        if HAS_REF:
+            acc += a_vals[:, None] * (x_vals - x_ref)
+        else:
+            acc += a_vals[:, None] * x_vals
 
     if HAS_BIAS:
         b_vals = tl.load(b + rows, mask=rows < M, other=0.0)
@@ -83,7 +101,7 @@ def ell_spmm_kernel(
         triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=3),
         triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=4),
     ],
-    key=['M', 'K', 'HAS_BIAS'],
+    key=['M', 'K', 'HAS_BIAS', 'HAS_REF'],
 )
 @triton.jit
 def _ell_spmv_kernel(
@@ -92,6 +110,8 @@ def _ell_spmv_kernel(
     N: tl.constexpr,
     K: tl.constexpr,
     HAS_BIAS: tl.constexpr,
+    HAS_REF: tl.constexpr,
+    REF_DIV: tl.constexpr,
     stride_vals_m: tl.constexpr,
     stride_vals_k: tl.constexpr,
     stride_cols_m: tl.constexpr,
@@ -108,6 +128,10 @@ def _ell_spmv_kernel(
 
     # Gather x indices and values for all K nonzeros in this block of rows
     acc = tl.zeros((BLOCK_M,), tl.float32)
+    if HAS_REF:
+        owner = rows // REF_DIV
+        x_ref = tl.load(x + owner * stride_x_n, mask=mask, other=0.0)
+
     for kk in range(K):
         a_val = tl.load(
             vals + rows * stride_vals_m + kk * stride_vals_k,
@@ -118,7 +142,10 @@ def _ell_spmv_kernel(
             mask=mask, other=0,
         )
         x_val = tl.load(x + a_col * stride_x_n, mask=mask, other=0.0)
-        acc += a_val * x_val
+        if HAS_REF:
+            acc += a_val * (x_val - x_ref)
+        else:
+            acc += a_val * x_val
 
     if HAS_BIAS:
         acc += tl.load(b + rows * stride_b_m, mask=mask, other=0.0)
@@ -130,12 +157,12 @@ def _ell_spmv_kernel(
 # trials because b may alias y when accumulating into an existing buffer.
 _ell_spmv_out_kernel = triton.autotune(
     configs=_ell_spmv_kernel.configs,
-    key=['M', 'K', 'HAS_BIAS'],
+    key=['M', 'K', 'HAS_BIAS', 'HAS_REF'],
     restore_value=['y'],
 )(_ell_spmv_kernel.fn)
 
 
-def ell_spmv(vals, cols, x, b=None, *, out=None):
+def ell_spmv(vals, cols, x, b=None, *, out=None, ref_div=None):
     """
     vals: [M, K], cols: [M, K]
     x:    [N] or [N, 1]
@@ -143,9 +170,15 @@ def ell_spmv(vals, cols, x, b=None, *, out=None):
     returns y: [M] or [M, 1] (matches x dimensionality)
     out: optional output buffer, overwritten with A @ x + b; may alias b,
          but must not overlap x, vals or cols.
+    ref_div: if given, evaluate the differences-first (DIFF) form
+         y_i = sum_k A_ik * (x[col_ik] - x[row_i // ref_div]).
+         Intended for zero-row-sum operators (e.g. the least-squares
+         gradient, ref_div = dim), where it is algebraically identical
+         (A @ 1 = 0) but annihilates constants exactly instead of by
+         cancellation.
 
     1D kernel: one block per row chunk, no wasted BLOCK_B dimension.
-    Autotuned on (M, K, HAS_BIAS).
+    Autotuned on (M, K, HAS_BIAS, HAS_REF).
     """
     M, K = vals.shape
     N = x.shape[0]
@@ -153,6 +186,8 @@ def ell_spmv(vals, cols, x, b=None, *, out=None):
     # torch.compile to insert unnecessary output-buffer copies.
     y = torch.empty((M,), device=x.device, dtype=x.dtype) if out is None else out
     HAS_BIAS = b is not None
+    HAS_REF = ref_div is not None
+    REF_DIV = ref_div or 1
     b_ptr = b if HAS_BIAS else x
     stride_b_m = b.stride(0) if HAS_BIAS else 0
 
@@ -161,7 +196,7 @@ def ell_spmv(vals, cols, x, b=None, *, out=None):
     kernel = _ell_spmv_kernel if out is None else _ell_spmv_out_kernel
     kernel[grid](
         vals, cols, x, y, b_ptr,
-        M, N, K, HAS_BIAS,
+        M, N, K, HAS_BIAS, HAS_REF, REF_DIV,
         vals.stride(0), vals.stride(1),
         cols.stride(0), cols.stride(1),
         x.stride(0), y.stride(0), stride_b_m,
@@ -171,12 +206,13 @@ def ell_spmv(vals, cols, x, b=None, *, out=None):
     return y if x.ndim == 1 else y.unsqueeze(-1)
 
 
-def ell_spmm(vals, cols, x, b=None):
+def ell_spmm(vals, cols, x, b=None, *, ref_div=None):
     """
     vals: [M, K], cols: [M, K]
     x:    [N, B]
     b:    [M] or None   (fused bias: y = A @ x + b)
     returns y: [M, B]
+    ref_div: see ell_spmv. Row i's reference row is i // ref_div.
 
     Dispatches to ell_spmv when B == 1.
     Block sizes chosen automatically by @triton.autotune.
@@ -185,9 +221,11 @@ def ell_spmm(vals, cols, x, b=None):
     N, B = x.shape
 
     if B == 1:
-        return ell_spmv(vals, cols, x, b=b)
+        return ell_spmv(vals, cols, x, b=b, ref_div=ref_div)
 
     HAS_BIAS = b is not None
+    HAS_REF = ref_div is not None
+    REF_DIV = ref_div or 1
     y = torch.empty((M, B), device=x.device, dtype=x.dtype)
     b_ptr = b if HAS_BIAS else x
 
@@ -198,7 +236,7 @@ def ell_spmm(vals, cols, x, b=None):
 
     ell_spmm_kernel[grid](
         vals, cols, x, y, b_ptr,
-        M, B, K, HAS_BIAS,
+        M, B, K, HAS_BIAS, HAS_REF, REF_DIV,
         vals.stride(0), vals.stride(1),
         cols.stride(0), cols.stride(1),
         x.stride(0), x.stride(1),

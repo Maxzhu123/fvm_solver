@@ -79,7 +79,9 @@ class MeshCache:
         (cell_disps, facet_dists_bc, G_mats, neigh_combine) = mesh_setup.cell_grad_stuff
         self.facet_dists_bc = facet_dists_bc.to(device).unsqueeze(-1).expand(-1, n_comp)
         G_mats = interleave_sparse_rows(G_mats) # Want output to be easily reshaped.
-        self.G_mats = to_sparse(G_mats, device)
+        # G_mats rows sum to zero (least-squares gradient): use the DIFF form so
+        # constants are annihilated exactly rather than by cancellation.
+        self.G_mats = to_sparse(G_mats, device, ref_div=self.dim)
         self.neigh_combine = neigh_combine.to(device).int()
 
         self.cell_disps = cell_disps.to(device)
