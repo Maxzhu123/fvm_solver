@@ -123,7 +123,7 @@ def main():
     np.random.seed(321)
     torch.manual_seed(321)
 
-    new_mesh = True
+    new_mesh = False
 
     cfg: ConfigFVM = ConfigEllipse()
     phy_setup = FluidConstitution2D(cfg, dim=2)

@@ -34,7 +34,7 @@ class SPMCuda(SPM):
             A = A.to_sparse_csr()
 
         A = A.to(device)
-        self.vals, self.cols = csr_to_ell(A)
+        self.vals, self.cols = csr_to_ell(A, ref_div=ref_div)
 
     def spMM(self, X: torch.Tensor, b: torch.Tensor=None) -> torch.Tensor:
         return ell_spmm(self.vals, self.cols, X, b=b, ref_div=self.ref_div)
@@ -53,7 +53,7 @@ class SPMGeneral(SPM):
         A = A.to(device)
         self.use_ell = USE_CPU_ELL
         if self.use_ell:
-            self.vals, self.cols = csr_to_ell(A)
+            self.vals, self.cols = csr_to_ell(A, ref_div=ref_div)
         else:
             self.A = torch.sparse_csr_tensor(
                 A.crow_indices().to(torch.int32),

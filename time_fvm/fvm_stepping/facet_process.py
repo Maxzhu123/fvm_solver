@@ -359,9 +359,9 @@ class FacetCalc:
         self.cell_grads = cell_grads    # Save for boundary conditions
 
         # Decompose components back
-        self.Vs_facet = U_face_all[:, :, :dim].contiguous()                   # shape = [n_facets, facets=2, n_comp=dim]
-        self.rho_facet = U_face_all[:, :, dim].unsqueeze(-1).contiguous()     # shape = [n_facets, facets=2, dims=1]
-        self.T_facet = U_face_all[:, :, dim+1].unsqueeze(-1).contiguous()     # shape = [n_facets, facets=2, dims=1]
+        self.Vs_facet = U_face_all[:, :, :dim]                   # shape = [n_facets, facets=2, n_comp=dim]
+        self.rho_facet = U_face_all[:, :, dim].unsqueeze(-1)     # shape = [n_facets, facets=2, dims=1]
+        self.T_facet = U_face_all[:, :, dim+1].unsqueeze(-1)     # shape = [n_facets, facets=2, dims=1]
         # Conserved quantities
         self.mom_facet, _, self.Q_facet = self.phy_setup.primatives_to_state(self.Vs_facet, self.rho_facet, self.T_facet)
         self.phi = (self.Vs_facet * mesh.normals.unsqueeze(1)).sum(dim=-1) # shape = [n_facets, facets=2, ]

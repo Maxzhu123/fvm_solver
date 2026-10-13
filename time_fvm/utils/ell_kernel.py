@@ -183,13 +183,12 @@ def ell_spmv(vals, cols, x, b=None, *, out=None, ref_div=None):
     HAS_BIAS = b is not None
     HAS_REF = ref_div is not None
     REF_DIV = ref_div or 1
-    b_ptr = b if HAS_BIAS else x
     stride_b_m = b.stride(0) if HAS_BIAS else 0
 
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_M']),)
 
     _ell_spmv_kernel[grid](
-        vals, cols, x, y, b_ptr,
+        vals, cols, x, y, b,
         M, N, K, HAS_BIAS, HAS_REF, HAS_OUT, REF_DIV,
         vals.stride(0), vals.stride(1),
         cols.stride(0), cols.stride(1),
@@ -219,7 +218,6 @@ def ell_spmm(vals, cols, x, b=None, *, ref_div=None):
     HAS_REF = ref_div is not None
     REF_DIV = ref_div or 1
     y = torch.empty((M, B), device=x.device, dtype=x.dtype)
-    b_ptr = b if HAS_BIAS else x
 
     grid = lambda meta: (
         triton.cdiv(M, meta['BLOCK_M']),
@@ -227,7 +225,7 @@ def ell_spmm(vals, cols, x, b=None, *, ref_div=None):
     )
 
     ell_spmm_kernel[grid](
-        vals, cols, x, y, b_ptr,
+        vals, cols, x, y, b,
         M, B, K, HAS_BIAS, HAS_REF, REF_DIV,
         vals.stride(0), vals.stride(1),
         cols.stride(0), cols.stride(1),
@@ -250,13 +248,28 @@ def print_best_config():
         print("Error getting best config.")
 
 
-def csr_to_ell(csr: torch.Tensor, K: int | None = None):
+def csr_to_ell(csr: torch.Tensor, K: int | None = None, *, ref_div: int | None = None):
     """Convert a PyTorch sparse CSR matrix to ELL format.
 
     Returns vals: [M, K], cols: [M, K].
     Padded entries use col=0, val=0.
+    ref_div: omit owner entries for the DIFF form; the packed operator must
+        still be evaluated with the same ref_div.
+        Each owner term is weight * (x_owner - x_owner) = 0. Removing it
+        preserves the reference subtraction and exact zero gradients for
+        constant fields while reducing the number of packed entries.
     """
     assert csr.layout == torch.sparse_csr, "Input must be a sparse CSR tensor"
+
+    if ref_div is not None:
+        if ref_div <= 0:
+            raise ValueError("ref_div must be positive")
+        coo = csr.to_sparse_coo().coalesce()
+        rows, cols = coo.indices()
+        # Owner entries contribute weight * (x_owner - x_owner) = 0.
+        keep = cols != rows // ref_div
+        csr = torch.sparse_coo_tensor(coo.indices()[:, keep], coo.values()[keep], size=csr.shape,
+                                      device=csr.device, is_coalesced=True).to_sparse_csr()
 
     crow = csr.crow_indices()
     col = csr.col_indices().to(torch.int32)

@@ -37,12 +37,13 @@ class FluidConstitution(ABC):
     def state_to_primative(self, state: torch.Tensor):
         """ Convert from conserved quantities (momentum, rho, energy) to primitives (velocity, rho, T) """
         d = self.dim
-        momentum, rho, Q = state[:, :d], state[:, d], state[:, d+1]
-        rho, Q = rho.unsqueeze(-1), Q.unsqueeze(-1)
+        rho, Q = state[:, d], state[:, d+1]
 
-        V = momentum / rho
-        T = (Q / rho - 0.5 * V.square().sum(dim=1, keepdim=True)) / self.C_v
-        primatives = torch.cat([V, rho, T], dim=-1)
+        # Keep components explicit so velocity and temperature can fuse together.
+        velocities = tuple(state[:, i] / rho for i in range(d))
+        speed_sq = sum(v.square() for v in velocities)
+        T = (Q / rho - 0.5 * speed_sq) / self.C_v
+        primatives = torch.stack((*velocities, rho, T), dim=-1)
 
         return primatives, state
 
@@ -108,34 +109,28 @@ class FluidConstitution2D(FluidConstitution):
 
     def _tau(self, E_props: FacetCalc):
         """ Compute stress tensor:
-                tau = a0(I1, I2)I + a2(I1, I2)D
+                tau = a0 I + a1 (D - 0.5 I1 I)
+            Symmetric strain:
+                D = 0.5 * (grad(V) + grad(V).T)
+            2D invariants:
+                I1 = tr(D)   (divergence)
+                I2 = tr(D^2) (magnitude of deformation)
          """
         T = E_props.T_facet.mean(dim=1).squeeze()         # shape = [n_facets]
         grad_V_t = E_props.grad_V   # shape = [n_facets, dim=2, n_comp=2]
 
-        # Strain and invariants
-        D, I1, I2 = self._strain_values(grad_V_t)        # shape = [n_facets, 2, 2]
-
+        # Symmetric strain components and invariants, computed per facet.
+        Dxx = grad_V_t[:, 0, 0]
+        Dyy = grad_V_t[:, 1, 1]
+        Dxy = 0.5 * (grad_V_t[:, 0, 1] + grad_V_t[:, 1, 0])
+        I1 = Dxx + Dyy
+        I2 = Dxx.square() + Dyy.square() + 2 * Dxy.square()
         a0, a1 = self._viscosity_coef(T, I1, I2)
 
-        eye = torch.eye(2, device=self.device).unsqueeze(0)
-        a0, a1, I1 = a0.view(-1, 1, 1), a1.view(-1, 1, 1), I1.view(-1, 1, 1)
-        self.tau = a0 * eye + a1 * (D-1/2 * I1 * eye)  # shape = [n_facets, 2, 2]
-
-    def _strain_values(self, grad_V_t: torch.Tensor):
-        """ Compute strain tensor:
-                D = 0.5 * (grad(V) + grad(V).T)
-            Then compute the 2D invariants:
-                I1 = tr(D)  (divergence)
-                I2 = tr(D^2) (Magnitude of deformation)
-         """
-        D = 0.5 * (grad_V_t + grad_V_t.permute(0, 2, 1))    # shape = [n_facets, 2, 2]
-
-        # Invariants
-        I1 = D[:, 0, 0] + D[:, 1, 1]                        # shape = [n_facets]
-        I2 = (D**2).sum(dim=(-1, -2))       # Since D is symmetric, this is faster.
-
-        return D, I1, I2
+        tau_xx = a0 + a1 * (Dxx - 0.5 * I1)
+        tau_yy = a0 + a1 * (Dyy - 0.5 * I1)
+        tau_xy = a1 * Dxy
+        self.tau = torch.stack((tau_xx, tau_xy, tau_xy, tau_yy), dim=-1).reshape(-1, 2, 2)
 
     def _viscosity_coef(self, T, I1, I2):
         """ Get viscosity magnitudes a0 and a1.
@@ -151,7 +146,7 @@ class FluidConstitution2D(FluidConstitution):
         # Viscoisty Coefficients
         T_eff = T / self.T_0
         # Viscosity = mu * (T/T0)^(3/2) * (T0 + S) / (T + S)
-        mu = self.mu * (T_eff**1.5) * (self.T_0 + self.S_const) / (T + self.S_const)  # shape = [n_facets]
+        mu = self.mu * (T_eff * torch.sqrt(T_eff)) * (self.T_0 + self.S_const) / (T + self.S_const)  # shape = [n_facets]
         # Bulk viscosity: Proportional to T^2
         mu_b = self.mu_b * (T_eff**2)
 
@@ -365,8 +360,9 @@ class KTDiffusion(FVMFacetFlux):
         c = self.phy_setup.c.max(dim=1).values          # shape = [n_facets, 1]
 
         # Normal Mach number from the saved flux: phi = facet_size * V_n.
+        phi_max = E_props.phi.abs().amax(dim=1, keepdim=True)  # shape = [n_facets, 1]
         Vn = E_props.phi / facet_size                  # shape = [n_facets, facets=2]
-        M_n = Vn.abs().amax(dim=1, keepdim=True) / (c + 1e-8)
+        M_n = phi_max / (facet_size * (c + 1e-8))
 
         # Tangential-Mach floor: f_t = 1.1*x/(1+x), x = (gamma-1)*M_t^2.
         Vt_sq = (Vs_face.square().sum(dim=-1) - Vn.square()).clamp_min(0)
@@ -376,7 +372,6 @@ class KTDiffusion(FVMFacetFlux):
         v_factor = torch.clamp(torch.maximum(M_n, tangential_floor), min=self.v_factor, max=1)
 
         # phi = V . n = facet_size * V_n. Include area in the propagation speeds.
-        phi_max = E_props.phi.abs().amax(dim=1, keepdim=True)  # shape = [n_facets, 1]
         c_A = c * facet_size
         a_vel_A = v_factor * c_A + phi_max
         a_other_A = c_A + phi_max
