@@ -19,10 +19,10 @@ def main():
     phy_setup = FluidConstitution2D(cfg, dim=2)
 
     new_mesh = False
-    cfg.profile = False
-    cfg.min_A = 10e-6
-    cfg.max_A = 20e-5
-    cfg.n_iter = 20000
+    cfg.profile = True
+    cfg.min_A = 5e-6
+    cfg.max_A = 1e-5
+    cfg.n_iter = 5000
 
     if new_mesh:
         c_print(f'Generating new mesh...', "green")

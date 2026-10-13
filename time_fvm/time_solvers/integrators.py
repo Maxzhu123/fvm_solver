@@ -331,17 +331,16 @@ class ButcherAdapt(TSolver, Adaptive):
         """
 
         state_0 = self.cells.state
-        k = torch.zeros((self.stages, *state_0.shape), device=self.A.device)
-
-        k[0] = self.dt * self._forward_state(state_0)
+        # Keep stages separate to avoid copying the stacked buffer on each update.
+        k = [self.dt * self._forward_state(state_0)]
 
         for i in range(1, self.stages):
-            increment = torch.einsum("j...,j...->...", self.A[i, :i], k[:i])
-            k[i] = self.dt * self._forward_state(state_0 + increment)
+            increment = sum(self.A[i, j] * k[j] for j in range(i))
+            k.append(self.dt * self._forward_state(state_0 + increment))
 
         # Combine stages to compute next state, using lower accuracy state as adaptive stepsize estimate
-        dU_high = torch.sum(self.b * k, dim=0)
-        dU_low = torch.sum(self.b2 * k, dim=0)
+        dU_high = sum(self.b[j] * k[j] for j in range(self.stages))
+        dU_low = sum(self.b2[j] * k[j] for j in range(self.stages))
 
         self.update_stepsize(dU_high, dU_low, state_0)
         U_next_high = state_0 + dU_high
@@ -408,4 +407,3 @@ class Euler(TSolver):
         U_i_1 = self.cells.state + self.dt * dUdt
 
         return U_i_1
-

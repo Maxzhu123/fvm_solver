@@ -101,7 +101,9 @@ def ell_spmm_kernel(
         triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=3),
         triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=4),
     ],
-    key=['M', 'K', 'HAS_BIAS', 'HAS_REF'],
+    key=['M', 'K', 'HAS_BIAS', 'HAS_REF', 'HAS_OUT'],
+    # The bias may alias y; each tuning trial must see the original buffer.
+    restore_value=['y'],
 )
 @triton.jit
 def _ell_spmv_kernel(
@@ -111,6 +113,7 @@ def _ell_spmv_kernel(
     K: tl.constexpr,
     HAS_BIAS: tl.constexpr,
     HAS_REF: tl.constexpr,
+    HAS_OUT: tl.constexpr,
     REF_DIV: tl.constexpr,
     stride_vals_m: tl.constexpr,
     stride_vals_k: tl.constexpr,
@@ -153,15 +156,6 @@ def _ell_spmv_kernel(
     tl.store(y + rows * stride_y_m, acc, mask=mask)
 
 
-# Separate tuning cache for caller-owned outputs. Restore y between tuning
-# trials because b may alias y when accumulating into an existing buffer.
-_ell_spmv_out_kernel = triton.autotune(
-    configs=_ell_spmv_kernel.configs,
-    key=['M', 'K', 'HAS_BIAS', 'HAS_REF'],
-    restore_value=['y'],
-)(_ell_spmv_kernel.fn)
-
-
 def ell_spmv(vals, cols, x, b=None, *, out=None, ref_div=None):
     """
     vals: [M, K], cols: [M, K]
@@ -178,13 +172,14 @@ def ell_spmv(vals, cols, x, b=None, *, out=None, ref_div=None):
          cancellation.
 
     1D kernel: one block per row chunk, no wasted BLOCK_B dimension.
-    Autotuned on (M, K, HAS_BIAS, HAS_REF).
+    Autotuned on (M, K, HAS_BIAS, HAS_REF, HAS_OUT).
     """
     M, K = vals.shape
     N = x.shape[0]
+    HAS_OUT = out is not None
     # Pass the whole fresh output to Triton. Mutating a column view forces
     # torch.compile to insert unnecessary output-buffer copies.
-    y = torch.empty((M,), device=x.device, dtype=x.dtype) if out is None else out
+    y = out if HAS_OUT else torch.empty((M,), device=x.device, dtype=x.dtype)
     HAS_BIAS = b is not None
     HAS_REF = ref_div is not None
     REF_DIV = ref_div or 1
@@ -193,17 +188,14 @@ def ell_spmv(vals, cols, x, b=None, *, out=None, ref_div=None):
 
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_M']),)
 
-    kernel = _ell_spmv_kernel if out is None else _ell_spmv_out_kernel
-    kernel[grid](
+    _ell_spmv_kernel[grid](
         vals, cols, x, y, b_ptr,
-        M, N, K, HAS_BIAS, HAS_REF, REF_DIV,
+        M, N, K, HAS_BIAS, HAS_REF, HAS_OUT, REF_DIV,
         vals.stride(0), vals.stride(1),
         cols.stride(0), cols.stride(1),
         x.stride(0), y.stride(0), stride_b_m,
     )
-    if out is not None:
-        return out
-    return y if x.ndim == 1 else y.unsqueeze(-1)
+    return y.unsqueeze(-1) if not HAS_OUT and x.ndim == 2 else y
 
 
 def ell_spmm(vals, cols, x, b=None, *, ref_div=None):
