@@ -351,6 +351,10 @@ class KTDiffusion(FVMFacetFlux):
         self.a_clip = 1
 
     def facet_fluxes(self):
+        """ Limiter based on KT-Diffusion with weakened velocity flux.
+            1) Use normal velocity instead of full velocity
+            2) Change from c + v -> k(v) c + v, lowering static diffusion component with smoothing.
+        """
         E_props = self.E_props
         rho_face = E_props.rho_facet
         Vs_face = E_props.Vs_facet                      # shape = [n_facets, facets=2, n_comp=dim]
