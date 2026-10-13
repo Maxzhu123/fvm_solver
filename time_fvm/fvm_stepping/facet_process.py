@@ -7,6 +7,7 @@ from time_fvm.utils.sparse import combine_facet_operators, lift_sparse_matrix, i
 from time_fvm.fvm_stepping.facet_boundary import BoundarySetter
 from time_fvm.fvm_stepping.limiter import SlopeLimiter
 from time_fvm.utils.reconstruction_kernel import limit_face_projection
+from time_fvm.utils.face_gradient_kernel import compute_face_gradients
 if TYPE_CHECKING:
     from time_fvm.fvm_equation import FluidConstitution
     from time_fvm.mesh_utils.fvm_mesh import FVMMesh
@@ -363,6 +364,15 @@ class FacetCalc:
         self.mom_facet, _, self.Q_facet = self.phy_setup.primatives_to_state(self.Vs_facet, self.rho_facet, self.T_facet)
         self.phi = (self.Vs_facet * mesh.normals.unsqueeze(1)).sum(dim=-1) # shape = [n_facets, facets=2, ]
 
+        # Compute gradients of velocity and temperature on each face, with non-orthogonal correction.
+        self.grad_V, self.grad_T_n, _ = self._compute_face_gradients(Us, cell_grads)
+
+    def _compute_face_gradients(self, Us, cell_grads):
+        """ Compute corrected face gradients from limited cell gradients. """
+        if Us.is_cuda:      # Triton kernel for speed.
+            return compute_face_gradients(self.mesh, Us, cell_grads)
+
+        mesh, dim = self.mesh, self.dim
         # Compute face and cell gradients of velocity and temperature
         grad_F = cell_grads[:, :, self.grad_comps].reshape(self.n_cells, dim*(dim+1))      # shape = [n_cells, dim * (dim+1)]
         # Average limited gradients directly from the adjacent cells.
@@ -380,8 +390,7 @@ class FacetCalc:
         grad_F_dot_n = (grad_F_lstsq * mesh.normals_hat).sum(dim=1, keepdim=True)       # shape = [n_facets, 1, dim]
         grad_F = grad_F_lstsq + (dFdn_correct.unsqueeze(1) - grad_F_dot_n) * mesh.normals_hat            # [n_facets, dim, dim+1]
 
-        self.grad_V = grad_F[:, :, :dim]
-        self.grad_T_n = dFdn_correct[:, -1]      # shape = [n_facets]
+        return grad_F[:, :, :dim], dFdn_correct[:, -1], grad_faces_n
 
     def _limit_face_vals(self, Us, Us_cell_facet, cell_grads):
         """ Limited B-J scheme for cell to facet interpolation.

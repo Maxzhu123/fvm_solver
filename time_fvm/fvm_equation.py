@@ -369,25 +369,31 @@ class KTDiffusion(FVMFacetFlux):
         mom_face = E_props.mom_facet
         facet_size = E_props.mesh.facet_size
 
-        # Wavespeed is c + v_max. Clip velocity wavespeed to k*c + v_max
-        Vs = Vs_face.norm(dim=-1)                       # shape = [n_facets, facets=2]
-        Vs_max = Vs.max(dim=1, keepdim=True).values     # shape = [n_facets, 1]
         c = self.phy_setup.c.max(dim=1).values          # shape = [n_facets, 1]
 
-        # Reduce diffusion for velocity for low Mach number flows
-        M = (Vs_max / (c + 1e-8)).abs()
-        v_factor = torch.clamp(M, min=self.v_factor, max=1)
+        # Normal Mach number from the saved flux: phi = facet_size * V_n.
+        Vn = E_props.phi / facet_size                  # shape = [n_facets, facets=2]
+        M_n = Vn.abs().amax(dim=1, keepdim=True) / (c + 1e-8)
 
-        # Use different diffusion for velocity and other components. For velocity, use v_factor * c, for others use c.
-        a_vel = v_factor * c + Vs_max                   # shape = [n_facets, n_comp]
-        a_other = c + Vs_max                            # shape = [n_facets, n_comp]
+        # Tangential-Mach floor: f_t = 1.1*x/(1+x), x = (gamma-1)*M_t^2.
+        Vt_sq = (Vs_face.square().sum(dim=-1) - Vn.square()).clamp_min(0)
+        M_t_sq = Vt_sq.amax(dim=1, keepdim=True) / (c + 1e-8).square()
+        g_Mt_sq = (self.phy_setup.gamma - 1) * M_t_sq
+        tangential_floor = 1.1 * g_Mt_sq / (1 + g_Mt_sq)
+        v_factor = torch.clamp(torch.maximum(M_n, tangential_floor), min=self.v_factor, max=1)
+
+        # phi = V . n = facet_size * V_n. Include area in the propagation speeds.
+        phi_max = E_props.phi.abs().amax(dim=1, keepdim=True)  # shape = [n_facets, 1]
+        c_A = c * facet_size
+        a_vel_A = v_factor * c_A + phi_max
+        a_other_A = c_A + phi_max
 
         # Flux = a/2 * (U_L - U_R) * facet_len
         dmom = mom_face[:, 0] - mom_face[:, 1]          # [n_facets, dim]
         drho = rho_face[:, 0] - rho_face[:, 1]          # [n_facets, 1]
         dQ = Q_face[:, 0] - Q_face[:, 1]                # [n_facets, 1]
 
-        kt_fluxes = 0.5 * torch.cat([a_vel * dmom, a_other * drho, a_other * dQ], dim=1) * facet_size
+        kt_fluxes = 0.5 * torch.cat([a_vel_A * dmom, a_other_A * drho, a_other_A * dQ], dim=1)
 
         if fluxes is None:
             return kt_fluxes

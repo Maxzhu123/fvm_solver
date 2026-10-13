@@ -1,23 +1,19 @@
 """ Benchmark fused normal face gradients, averaging and non-orthogonal correction.
     Checks 2D/3D cases, arbitrary bias and all normal-gradient components.
-    Compares isolated kernels and full solver steps; production is unchanged.
+    Compares the integrated kernel against the PyTorch reference, including full steps.
 
     Run: python -m benchmark.benchmark_face_gradients
     Results: /tmp/fvm-gradient-trial-results.json
 """
-import inspect
 import json
 import pickle
 import statistics
-import textwrap
 import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import torch
-import triton
-import triton.language as tl
 
 from base_cfg import ARTEFACT_DIR
 from time_fvm.config_fvm import ConfigEllipse
@@ -26,87 +22,12 @@ from time_fvm.run_fvm import init_conds_ellipses
 from time_fvm.time_solvers.integrators import get_solver
 from time_fvm.fvm_stepping.facet_process import FacetCalc
 from time_fvm.utils.ell_kernel import ell_spmv
-
-
-@triton.autotune(configs=[
-    triton.Config({'BLOCK':64},num_warps=2),
-    triton.Config({'BLOCK':128},num_warps=4),
-    triton.Config({'BLOCK':256},num_warps=4),
-    triton.Config({'BLOCK':512},num_warps=8),
-],key=['NF','C','D','K'])
-@triton.jit
-def gradient_kernel(U,G,Vals,Cols,Bias,Cells,XOrth,NHat,GV,GT,GN,
-                    NF:tl.constexpr,C:tl.constexpr,D:tl.constexpr,K:tl.constexpr,
-                    SVM:tl.constexpr,SVK:tl.constexpr,SCM:tl.constexpr,SCK:tl.constexpr,
-                    SB:tl.constexpr,BLOCK:tl.constexpr):
-    """ Compute normal gradients, average adjacent cell gradients and correct grad_V.
-        Writes grad_V, grad_T_n and normal gradients for all components.
-        NF = n_facets, C = n_comp, D = dim, K = ELL entries per row.
-
-        U: Us, shape = [n_cells, n_comp]
-        G: limited cell_grads, shape = [n_cells, dim, n_comp]
-        Vals, Cols: A_face_grad, shape = [n_facets*n_comp, K]
-        Bias: b_face_grad, shape = [n_facets*n_comp]
-        Cells: face_cell_indices, shape = [n_facets, 2]
-        XOrth, NHat: X_orthog, normals_hat, shape = [n_facets, dim, 1]
-        GV: grad_V, shape = [n_facets, dim, dim]
-        GT: grad_T_n, shape = [n_facets]
-        GN: normal face gradients, shape = [n_facets, n_comp]
-    """
-    i = tl.program_id(0)*BLOCK + tl.arange(0,BLOCK)
-    mask = i < NF*C
-    facet,comp = i//C,i%C
-    # Direct face gradient: grad_faces_n = A_face_grad @ Us.flatten() + b_face_grad
-    # Preserve all components, including density
-    dn = tl.zeros((BLOCK,),tl.float32)
-    for kk in range(K):
-        value = tl.load(Vals+i*SVM+kk*SVK,mask=mask,other=0.)
-        col = tl.load(Cols+i*SCM+kk*SCK,mask=mask,other=0)
-        u = tl.load(U+col,mask=mask,other=0.)
-        dn += value*u
-    dn += tl.load(Bias+i*SB,mask=mask,other=0.)
-    tl.store(GN+i,dn,mask=mask)
-    # Average limited cell gradients: grad_F_lstsq = 0.5 * (grad_L + grad_R)
-    # Boundary facets use the adjacent cell on both sides
-    grad_mask = mask & (comp != D)
-    left = tl.load(Cells+2*facet,mask=grad_mask,other=0)
-    right = tl.load(Cells+2*facet+1,mask=grad_mask,other=0)
-    averages,normals = (),()
-    orth,dot_n = tl.zeros((BLOCK,),tl.float32),tl.zeros((BLOCK,),tl.float32)
-    for d in tl.static_range(D):
-        gl = tl.load(G+left*D*C+d*C+comp,mask=grad_mask,other=0.)
-        gr = tl.load(G+right*D*C+d*C+comp,mask=grad_mask,other=0.)
-        average = .5*(gl+gr)
-        x = tl.load(XOrth+facet*D+d,mask=grad_mask,other=0.)
-        n = tl.load(NHat+facet*D+d,mask=grad_mask,other=0.)
-        averages += (average,)
-        normals += (n,)
-        orth += average*x    # grad_F_lstsq . X_orthog
-        dot_n += average*n   # grad_F_lstsq . normals_hat
-    # Correct normal derivative: dFdn_correct = grad_faces_n - grad_F_lstsq . X_orthog
-    correction = dn-orth
-    # Replace the normal part, retaining the tangential part:
-    # grad_F = grad_F_lstsq + (dFdn_correct - grad_F_lstsq . normals_hat) * normals_hat
-    for d in tl.static_range(D):
-        value = averages[d]+(correction-dot_n)*normals[d]
-        tl.store(GV+facet*D*D+d*D+comp,value,mask=mask & (comp<D))
-    # Temperature normal derivative for conduction: grad_T_n = dFdn_correct[T]
-    tl.store(GT+facet,correction,mask=mask & (comp==D+1))
+from time_fvm.utils.face_gradient_kernel import compute_face_gradients
 
 
 def fused(fc,U,grads):
-    """ Allocate outputs and launch the experimental face-gradient kernel. """
-    mesh = fc.mesh
-    op = mesh.A_face_grad
-    gv = torch.empty(fc.n_facets,fc.dim,fc.dim,device=U.device)
-    gt = torch.empty(fc.n_facets,device=U.device)
-    gn = torch.empty(fc.n_facets,fc.n_comp,device=U.device)
-    grid = lambda meta:(triton.cdiv(fc.n_facets*fc.n_comp,meta['BLOCK']),)
-    gradient_kernel[grid](U,grads,op.vals,op.cols,mesh.b_face_grad,
-        mesh.face_cell_indices,mesh.X_orthog,mesh.normals_hat,gv,gt,gn,
-        fc.n_facets,fc.n_comp,fc.dim,op.vals.shape[1],
-        op.vals.stride(0),op.vals.stride(1),op.cols.stride(0),op.cols.stride(1),mesh.b_face_grad.stride(0))
-    return gv,gt,gn
+    """ Launch the integrated face-gradient kernel. """
+    return compute_face_gradients(fc.mesh,U,grads)
 
 
 def original(fc,U,grads):
@@ -154,15 +75,19 @@ def synthetic():
             fc._face_grads = lambda U,vals=vals,cols=cols,bias=bias:ell_spmv(vals,cols,U.flatten(),bias).view(NF,C)
             check(fused(fc,U,grads),original(fc,U,grads),'synthetic D='+str(D)+' K='+str(K))
 
+        # Exercise the production CPU fallback with nonzero boundary bias.
+        U_cpu,grads_cpu = U.cpu(),grads.cpu()
+        vals_cpu,cols_cpu,bias_cpu = vals.cpu(),cols.cpu(),bias.cpu()
+        fc.mesh = SimpleNamespace(face_cell_indices=cells.cpu(),X_orthog=mesh.X_orthog.cpu(),
+                                  normals_hat=nhat.cpu())
+        fc._face_grads = lambda U:(vals_cpu*U.flatten()[cols_cpu]).sum(1).view(NF,C)+bias_cpu.view(NF,C)
+        check(FacetCalc._compute_face_gradients(fc,U_cpu,grads_cpu),original(fc,U_cpu,grads_cpu),
+              'CPU fallback D='+str(D))
 
-def install(fc):
-    """ Replace the face-gradient block on the after benchmark instance only. """
-    source = textwrap.dedent(inspect.getsource(FacetCalc.compute_facet))
-    start = source.index('    # Compute face and cell gradients')
-    source = source[:start]+'    self.grad_V, self.grad_T_n, normal_grads = fused(self, Us, cell_grads)\n'
-    ns = dict(FacetCalc.compute_facet.__globals__,fused=fused,__name__=__name__)
-    exec(compile(source,'<fused-face-gradients>','exec'),ns)
-    fc.compute_facet = types.MethodType(ns['compute_facet'],fc)
+
+def install_reference(fc):
+    """ Use the PyTorch reference on the before benchmark instance only. """
+    fc._compute_face_gradients = types.MethodType(original,fc)
 
 
 def build(saved):
@@ -210,6 +135,7 @@ def main():
     synthetic()
     with open(ARTEFACT_DIR/'fvm_mesh.pkl','rb') as stream:saved=pickle.load(stream)
     solvers = {name:build(saved) for name in ('before','after')}
+    install_reference(solvers['before'].eq.E_props)
     fc = solvers['before'].eq.E_props
     U = solvers['before'].cells.get_values()[0]
     U += torch.randn_like(U)*U.new_tensor([.1,.1,.01,1.])
@@ -247,7 +173,6 @@ def main():
     del graphs,functions
     # Restore previous gradients so both full solvers start identically.
     fc.cell_grads = None
-    install(solvers['after'].eq.E_props)
     t = torch.tensor(0.,device='cuda')
     for name,s in solvers.items():
         print('Compiling/warming '+name,flush=True)

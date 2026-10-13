@@ -93,14 +93,14 @@ class TSolver(ABC):
                 c_print(f'{i = }, {t = :.4g}, {avg_dt = :.3g}, {irl_time = :.3g}', color="bright_green")
                 st_time = time.time()
 
-            if t >= next_plot_t:
-                next_plot_t = t + self.plot_t
-                c_print(f'Plotting timestep {t = :.5g}', color="bright_yellow")
-
-                if self.dim == 2:
-                    self._plot_2d(t)
-                else:
-                    self._plot_3d(t)
+            # if t >= next_plot_t:
+            #     next_plot_t = t + self.plot_t
+            #     c_print(f'Plotting timestep {t = :.5g}', color="bright_yellow")
+            #
+            #     if self.dim == 2:
+            #         self._plot_2d(t)
+            #     else:
+            #         self._plot_3d(t)
 
             if t >= next_save_t:
                 next_save_t = t + self.save_t

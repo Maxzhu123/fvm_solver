@@ -22,7 +22,7 @@ def main():
     cfg.profile = True
     cfg.min_A = 5e-6
     cfg.max_A = 1e-5
-
+    cfg.n_iter = 5000
 
     if new_mesh:
         c_print(f'Generating new mesh...', "green")
