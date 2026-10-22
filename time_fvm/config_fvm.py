@@ -110,16 +110,16 @@ class ConfigEllipse(ConfigFVM):
     lnscale: float = 0.25
 
     # Save configuration
-    plot_t: float = 0.15   # Time interval between plots
+    plot_t: float = 0.05   # Time interval between plots
     save_t: float = 1000    # Time interval between saves
     print_i: int = 500   # Iterations between print statements
     end_t: float = 5       # Max simulation time.
 
     # Physical parameters
     T_0: float = 100        # Reference temperature
-    viscosity: float = 60e-4     # At reference temp
+    viscosity: float = 10e-4     # At reference temp
     visc_bulk: float = 15e-4
-    thermal_cond: float = 5e-5
+    thermal_cond: float = 1e-4
     S_const: float = 110.4       # Sutherland's constant
     gamma: float = 1.2  # Ratio of specific heats
     C_v: float = 2     # Specific heat at constant volume

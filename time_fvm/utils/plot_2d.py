@@ -1,6 +1,8 @@
 import numpy as np
 import torch
+from functools import lru_cache
 from matplotlib import pyplot as plt, tri as tri
+from matplotlib.collections import PathCollection, PolyCollection
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
@@ -43,6 +45,27 @@ def plot_points(Xs, values, lims=None, title="", show_index=False, Xlims=None):
     plt.show()
 
 
+@lru_cache(maxsize=1)
+def _cell_plot_geometry(Xs, triangles, Xlims):
+    """ Cache paths by mesh tensor identity; clear the cache after in-place mesh edits. """
+    Xs = Xs.detach().cpu().numpy()
+    triangles = triangles.detach().cpu().numpy()
+
+    if Xlims is None:
+        xlim = (Xs[:, 0].min(), Xs[:, 0].max())
+        ylim = (Xs[:, 1].min(), Xs[:, 1].max())
+        in_region = np.ones(len(triangles), dtype=bool)
+    else:
+        xlim, ylim = Xlims
+        verts = Xs[triangles]
+        in_region = ((verts[:, :, 0] >= xlim[0]) & (verts[:, :, 0] <= xlim[1]) &
+                     (verts[:, :, 1] >= ylim[0]) & (verts[:, :, 1] <= ylim[1])).all(axis=1)
+
+    # tripcolor builds these paths again for every field and every plot.
+    paths = PolyCollection(Xs[triangles[in_region]]).get_paths()
+    return paths, in_region, xlim, ylim
+
+
 def plot_interp_cell(Xs, triangles, values, Xlims=None, title="", edgecolors="none"):
     """
     Xs: Tensor of vertex coordinates (N x 2)
@@ -53,15 +76,10 @@ def plot_interp_cell(Xs, triangles, values, Xlims=None, title="", edgecolors="no
     Xlims: Optional tuple ((xmin, xmax), (ymin, ymax)) to set the plot limits.
     title: Plot title.
     """
-    # Convert to numpy arrays.
-    Xs = Xs.cpu().numpy()
-    values = values.cpu().numpy()
-    triangles = triangles.cpu().numpy()
-
-    # If values is 1D, expand to a batch of one.
-    values = values.squeeze()
-    if len(values.shape) == 1:
-        values = values[None, :]
+    if Xlims is not None:
+        Xlims = tuple(tuple(float(value) for value in limits) for limits in Xlims)
+    paths, in_region, xlim, ylim = _cell_plot_geometry(Xs, triangles, Xlims)
+    values = values.detach().cpu().numpy().reshape(-1, len(triangles))
 
     n_plots = values.shape[0]
     if n_plots <= 3:
@@ -77,32 +95,8 @@ def plot_interp_cell(Xs, triangles, values, Xlims=None, title="", edgecolors="no
     for ax in axes[n_plots:]:
         ax.axis('off')
 
-    # Create a triangulation from the vertex locations.
-    triang = tri.Triangulation(Xs[:, 0], Xs[:, 1], triangles)
-
     if isinstance(title, str):
         title = [title] * n_plots
-
-    # Determine plot limits.
-    if Xlims is not None:
-        xlim, ylim = Xlims
-    else:
-        xlim = (Xs[:, 0].min(), Xs[:, 0].max())
-        ylim = (Xs[:, 1].min(), Xs[:, 1].max())
-
-    triangles = triang.triangles  # shape: (n_triangles, 3)
-    verts = Xs[triangles]  # shape: (n_triangles, 3, 2)
-
-    in_region = (
-            (verts[:, :, 0] >= xlim[0]) &
-            (verts[:, :, 0] <= xlim[1]) &
-            (verts[:, :, 1] >= ylim[0]) &
-            (verts[:, :, 1] <= ylim[1])
-    ).all(axis=1)
-
-    # Create a new triangulation using only the triangles inside the region.
-    new_triangles = triang.triangles[in_region]
-    new_triang = tri.Triangulation(Xs[:, 0], Xs[:, 1], triangles=new_triangles)
 
     # Loop over each batch and plot only the triangles inside the region.
     for i, ax in enumerate(plot_axes):
@@ -110,9 +104,12 @@ def plot_interp_cell(Xs, triangles, values, Xlims=None, title="", edgecolors="no
         # Filter the face-based values for the triangles inside the region.
         new_facecolors = values[i][in_region]
 
-        # Plot using the new triangulation and corresponding facecolors.
-        tc = ax.tripcolor(new_triang, facecolors=new_facecolors, edgecolors=edgecolors,
-                          cmap='viridis', shading='flat')
+        # Share cached triangle paths, with independent colors and normalization per field.
+        tc = PathCollection(paths, array=new_facecolors, edgecolors=edgecolors, linewidths=0.25,
+                            antialiaseds=False if edgecolors.lower() == "none" else None, cmap='viridis')
+        ax.add_collection(tc, autolim=False)
+        ax.update_datalim(((xlim[0], ylim[0]), (xlim[1], ylim[1])))
+        ax.grid(False)
 
         # Attach a dedicated colorbar axis to keep colorbar height matched to this subplot.
         divider = make_axes_locatable(ax)
