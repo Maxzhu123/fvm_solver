@@ -10,11 +10,19 @@ class BCMode(Enum):
     FarfieldBlended = "Farfield_Blended"
 
 
+class ViscosityModel(Enum):
+    Newtonian = "Newton"        # Constant
+    PowerLaw = "PowerLaw"       # gamma_dot ^ (n-1)
+    Carreau = "Carreau"         # Interpolate between two values
+    HerschelBulkley = "HerschelBulkley" # Step between two values
+
+
 class ConfigBC(ABC):
     mode: BCMode
     # Farfield physical parameters
     v_n_inf: float
     v_t_inf: float
+    v_inf: tuple[float, ...]         # Use for 3D
     rho_inf: float
     T_inf: float
 
@@ -25,7 +33,7 @@ class ConfigFVM(ABC):
     compile: bool = True
 
     problem_setup: str | None = None    # {ellipse, nozzle}
-    N_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
+    n_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])
 
     # Temporal solver parameters
     solver_name: str = "Butcher_adapt"
@@ -55,6 +63,11 @@ class ConfigFVM(ABC):
     S_const: float | None = None       # Sutherland's constant
     gamma: float | None = None  # Ratio of specific heats
     C_v: float | None = None     # Specific heat at constant volume
+    # Viscosity model
+    visc_model: ViscosityModel = ViscosityModel.Newtonian
+    visc_n: float | None = None                # power-law index. 1 is Newtonian, >1 shear thickening, <1 shear thinning.
+    visc_min_factor: float | None = None
+    visc_gamma_scale: float | None = None      # shear-rate scale where non-Newtonian effects become important.
 
     # Stability parameters
     v_factor: float = 0.1     # Clamp KT diffusion term to v_factor * c to reduce viscosity.
@@ -70,9 +83,8 @@ class ConfigFVM(ABC):
 @dataclass
 class EllipseFarfield(ConfigBC):
     mode: BCMode = BCMode.Characteristic
-
     # Farfield physical parameters
-    v_n_inf: float = -5.5
+    v_n_inf: float = 5.5
     v_t_inf: float = 0
     rho_inf: float = 1
     T_inf: float = 100
@@ -81,12 +93,11 @@ class EllipseFarfield(ConfigBC):
 @dataclass
 class EllipseInlet(ConfigBC):
     mode: BCMode = BCMode.Characteristic
-
     # Target inlet physical parameters
-    v_n_inf = 5.5
+    v_n_inf: float = 3.
     v_t_inf: float = 0
-    rho_inf = 1
-    T_inf = 100
+    rho_inf: float = 1
+    T_inf: float = 100
 
 
 @dataclass
@@ -94,28 +105,32 @@ class ConfigEllipse(ConfigFVM):
     problem_setup: str | None = "ellipse"
 
     # Temporal solver parameters
-    dt: float | None        = 1e-4
+    dt: float | None        = 5e-5
     n_iter: int | None      = 50000
 
     # mesh parameters
-    min_A: float | None     = 0.25e-3
-    max_A: float | None     = 0.5e-3
-    lnscale: float | None   = 2
+    min_A: float | None     = 5e-5
+    max_A: float | None     = 10e-5
+    lnscale: float | None   = 0.25
 
     # Save configuration
-    plot_t: float | None    = 0.5
-    save_t: float | None    = 0.5
+    plot_t: float | None    = 0.05
+    save_t: float | None    = 1000
     print_i: int | None     = 500
-    end_t: float | None     = 20
+    end_t: float | None     = 5
 
     # Physical parameters
     T_0: float | None           = 100
-    viscosity: float | None     = 1e-3
-    visc_bulk: float | None     = 10e-3
-    thermal_cond: float | None  = 1e-6
+    viscosity: float | None     = 10e-4
+    visc_bulk: float | None     = 15e-4
+    thermal_cond: float | None  = 1e-4
     S_const: float | None       = 110.4
     gamma: float | None         = 1.2
     C_v: float | None           = 2
+    visc_model: ViscosityModel  = ViscosityModel.Carreau
+    visc_n: float | None        = 0.5
+    visc_min_factor: float | None = 0.3
+    visc_gamma_scale: float | None = 15
 
     def __post_init__(self):
         self.exit_cfg = EllipseFarfield()
@@ -125,7 +140,6 @@ class ConfigEllipse(ConfigFVM):
 @dataclass
 class NozzleFarfield(ConfigBC):
     mode: BCMode = BCMode.Characteristic
-
     # Farfield physical parameters
     v_n_inf: float = 0
     v_t_inf: float = 0
@@ -136,7 +150,6 @@ class NozzleFarfield(ConfigBC):
 @dataclass
 class NozzleInlet(ConfigBC):
     mode: BCMode = BCMode.Characteristic
-
     # Target inlet physical parameters
     v_n_inf: float = 0
     v_t_inf: float = 0

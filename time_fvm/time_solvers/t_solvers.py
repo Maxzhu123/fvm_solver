@@ -1,0 +1,182 @@
+from typing import TYPE_CHECKING
+from cprint import c_print
+import torch
+from abc import ABC, abstractmethod
+import time
+
+from time_fvm.ds_saving.saving import Saver
+if TYPE_CHECKING:
+    from time_fvm.fvm_equation import FVMEquation, FluidConstitution
+    from time_fvm.config_fvm import ConfigFVM
+
+
+class FVMCells:
+    state: torch.Tensor  # shape = (n_cells, n_comp)
+    """ State stored as: [momentum_x, momenum_y, density, energy] """
+    def __init__(self, n_cells, n_comp, phys_setup: FluidConstitution, init_val=None, device="cpu"):
+        self.device = device
+        self.phys_setup = phys_setup
+
+        if init_val is None:
+            self.state = torch.zeros(n_cells, n_comp, device=device)
+        else:
+            assert init_val.shape == (n_cells, n_comp), f'Incorrect us init shape {init_val.shape = }'
+            self.state = init_val.to(device)
+
+    def update_cells(self, state_new):
+        """ Update cell values """
+        self.state = state_new
+
+    def get_values(self):
+        return self.phys_setup.state_to_primative(self.state)
+
+    def convert_state_to_value(self, state):
+        return self.phys_setup.state_to_primative(state)
+
+    def save(self, name="state.pt"):
+        torch.save(self.state, name)
+
+    def load(self, name="state.pt"):
+        self.state = torch.load(name, weights_only=True)
+
+
+class TSolver(ABC):
+    """
+    Time-stepping solver for PDEs. This class is abstract and should be subclassed
+    to implement specific time-stepping schemes.
+    """
+    cells: FVMCells
+    eq: FVMEquation
+
+    def __init__(self, cells: FVMCells, eq: FVMEquation, cfg: ConfigFVM):
+        """
+        Initialize the time-stepping solver.
+        """
+        self.cfg = cfg
+        self.device = cfg.device
+        self.n_steps = cfg.n_iter
+        self.print_i, self.plot_t, self.save_t  = cfg.print_i, cfg.plot_t, cfg.save_t
+
+        self.cells = cells
+        self.eq = eq
+        self.saver = Saver(self.eq.E_props)
+        self.dim = eq.dim
+
+        # Initialise dt from config. Adaptive solvers can overwrite this value in the step function.
+        self.dt = torch.tensor(cfg.dt, device=self.device)
+
+        # replace self._solve_step with compiled version if needed
+        if cfg.compile:
+            self._solve_step = torch.compile(self._solve_step)
+
+    def _solve(self):
+        """ Main loop for the program.
+                - Loops through time steps, calling the step function to update the solution.
+                - Prints out progress every print_i iterations.
+                - Plots the solution every plot_t seconds.
+                - Saves the solution every save_t seconds.
+        """
+        next_plot_t = 0 # self.plot_t
+        next_save_t = self.save_t
+
+        st_time = time.time()
+        t, dts = 0., []
+        for i in range(self.n_steps):
+            t += self.dt
+            self._solve_step(t)
+            dts.append(self.dt)
+
+            # Printing, Plotting and Saving
+            if i % self.print_i == 0:
+                irl_time = (time.time() - st_time)/self.print_i
+                avg_dt = sum(dts[-self.print_i:]) / len(dts[-self.print_i:])
+                c_print(f'{i = }, {t = :.4g}, {avg_dt = :.3g}, {irl_time = :.3g}', color="bright_green")
+                st_time = time.time()
+
+            if t >= next_plot_t:
+                next_plot_t = t + self.plot_t
+                c_print(f'Plotting timestep {t = :.5g}', color="bright_yellow")
+
+                if self.dim == 2:
+                    self._plot_2d(t)
+                else:
+                    self._plot_3d(t)
+
+            if t >= next_save_t:
+                next_save_t = t + self.save_t
+                c_print(f'Saving at t={t:.5g}', color="bright_cyan")
+                primatives = self.cells.get_values()[0]
+                self.saver.save(t, self.eq.E_props, primatives)
+
+    def _plot_2d(self, t):
+        primatives = self.cells.get_values()[0]
+        assert not torch.any(torch.isnan(primatives)), "Nan detected in solver solution"
+        Xlims = None
+
+        titles = ["Vx", "Vy", "rho", "T"]
+        titles = [f'{title} at {t=:4g}' for title in titles]
+        self.eq.plot_interp(primatives, title=titles, Xlims=Xlims)
+
+        # # Plot viscosity stats
+        # if t > 0.5:
+        #     mod = self.eq.phy_setup.mod
+        #     cell_mod = mod[self.eq.mesh.cell_to_facet].mean(dim=-1)
+        #     self.eq.plot_interp(cell_mod, title=f"Mean: {cell_mod.mean().cpu().item():.2g}", Xlims=Xlims)
+
+    def _plot_3d(self, t):
+        primatives = self.cells.get_values()[0]
+        assert not torch.any(torch.isnan(primatives)), "Nan detected in solver solution"
+
+        Vs = primatives[:, :3]
+        T = primatives[:, 3]
+        self.eq.plot_interp_3d(Vs)#, scalar=T, scalar_name="Temperature")
+
+    @torch.inference_mode()
+    def solve(self):
+        if self.cfg.profile:
+            self._solve_profile()
+        else:
+            self._solve()
+
+    def _solve_step(self, t):
+        """ Run a single timestep. Used for compile. """
+        new_Us = self._step(t)
+        self.cells.update_cells(new_Us)
+
+    def _solve_profile(self):
+        import torch.profiler
+        # warmup
+        for i in range(10):
+            t = i * self.dt
+            self._solve_step(t)
+
+        with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                record_shapes=True, with_stack=True,
+        ) as prof:
+            for i in range(10):
+                t = i * self.dt
+                prof.step()
+                self._solve_step(t)
+
+        print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10))
+        prof.export_chrome_trace("trace.json")
+
+    @abstractmethod
+    def _step(self, t):
+        """
+        Perform a single time step of the solver.
+
+        Args:
+            i: The index of the current time step.
+        """
+        pass
+
+    def _euler_step(self, U):
+        prim_a, _ = self.cells.convert_state_to_value(U)
+        U_i_1 = U + self.dt * self.eq.forward(prim_a)
+        return U_i_1
+
+    def _forward_state(self, U):
+        prim, _ = self.cells.convert_state_to_value(U)
+        return self.eq.forward(prim)
