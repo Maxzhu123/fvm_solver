@@ -118,14 +118,13 @@ def init_conds_ellipses(mesh: FVMMesh2D, edge_tag, bound_edgs, phy_setup: FluidC
     return bc_tags, Us_init
 
 
-def main():
+def main(cfg: ConfigFVM = None, new_mesh=False):
     import pickle
     np.random.seed(321)
     torch.manual_seed(321)
 
-    new_mesh = False
-
-    cfg: ConfigFVM = ConfigEllipse()
+    if cfg is None:
+        cfg = ConfigEllipse()
     phy_setup = FluidConstitution2D(cfg, dim=2)
 
     if new_mesh:
