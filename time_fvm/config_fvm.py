@@ -20,6 +20,7 @@ class ConfigFVM(ABC):
     device: str = "cuda"
     compile: bool = True
     profile: bool = False         # Used for profiling code.
+    plot: bool = True               # Make plots
 
     problem_setup: str = None    # {ellipse, nozzle}
     n_comp: int = 4     # Number of components in the state vector (e.g., [momentum_x, momentum_y, density, energy])

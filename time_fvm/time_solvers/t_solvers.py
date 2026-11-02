@@ -55,7 +55,7 @@ class TSolver(ABC):
         self.cfg = cfg
         self.device = cfg.device
         self.n_steps = cfg.n_iter
-        self.print_i, self.plot_t, self.save_t  = cfg.print_i, cfg.plot_t, cfg.save_t
+        self.print_i, self.plot_t, self.save_t, self.plot  = cfg.print_i, cfg.plot_t, cfg.save_t, cfg.plot
 
         self.cells = cells
         self.eq = eq
@@ -93,7 +93,7 @@ class TSolver(ABC):
                 c_print(f'{i = }, {t = :.4g}, {avg_dt = :.3g}, {irl_time = :.3g}', color="bright_green")
                 st_time = time.time()
 
-            if t >= next_plot_t:
+            if t >= next_plot_t and self.plot:
                 next_plot_t = t + self.plot_t
                 c_print(f'Plotting timestep {t = :.5g}', color="bright_yellow")
 
